@@ -15,7 +15,4 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 bloomfilter = "1"
 async-trait = "0.1"
-
-# TODO: Add these when ready (complex dependency trees)
-# qdrant-client = "1"
-# ipfs-api-backend-hyper = "0.6"
+reqwest = { version = "0.12", features = ["json", "multipart"] }

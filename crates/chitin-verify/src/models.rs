@@ -47,11 +47,18 @@ pub enum ModelStatus {
     Retired,
 }
 
+/// Wrapper struct for YAML deserialization of model configs.
+#[derive(Debug, Deserialize)]
+struct YamlConfig {
+    models: Vec<ModelConfig>,
+}
+
 /// Registry of supported embedding models.
 ///
 /// The registry is the canonical source of truth for which models are available
 /// in the network. Tide Nodes use it to verify that submitted Polyps reference
 /// a valid model. Coral Nodes use it to select which model to embed with.
+#[derive(Debug)]
 pub struct ModelRegistry {
     models: Vec<ModelConfig>,
 }
@@ -72,14 +79,14 @@ impl ModelRegistry {
     ///
     /// # Phase 2+
     /// Will parse `configs/model_configs.yaml` and populate the registry.
-    pub fn load_from_yaml(_path: &str) -> Result<Self, chitin_core::error::ChitinError> {
-        // TODO(Phase 2): Add serde_yaml dependency and implement YAML loading.
-        //   let contents = std::fs::read_to_string(path)
-        //       .map_err(|e| ChitinError::Storage(e.to_string()))?;
-        //   let config: YamlConfig = serde_yaml::from_str(&contents)
-        //       .map_err(|e| ChitinError::Serialization(e.to_string()))?;
-        //   Ok(Self { models: config.models })
-        todo!("YAML loading not yet implemented — serde_yaml not in dependencies. Use ModelRegistry::default() for Phase 1.")
+    pub fn load_from_yaml(path: &str) -> Result<Self, chitin_core::error::ChitinError> {
+        use chitin_core::error::ChitinError;
+
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| ChitinError::Storage(format!("Failed to read YAML file '{}': {}", path, e)))?;
+        let config: YamlConfig = serde_yaml::from_str(&contents)
+            .map_err(|e| ChitinError::Serialization(format!("Failed to parse YAML: {}", e)))?;
+        Ok(Self { models: config.models })
     }
 
     /// Get the default model registry with the three models defined in
@@ -227,5 +234,72 @@ mod tests {
         assert_eq!(registry.list_active_models().len(), 3);
         // But total should be 4
         assert_eq!(registry.list_all_models().len(), 4);
+    }
+
+    #[test]
+    fn test_load_from_yaml_valid() {
+        // Use the actual configs/model_configs.yaml file (path relative to workspace root)
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let yaml_path = std::path::Path::new(manifest_dir)
+            .join("../../configs/model_configs.yaml");
+        let registry = ModelRegistry::load_from_yaml(yaml_path.to_str().unwrap());
+        assert!(registry.is_ok(), "Should load valid YAML: {:?}", registry.err());
+        let registry = registry.unwrap();
+        assert_eq!(registry.list_all_models().len(), 3);
+
+        // Verify specific models loaded
+        let bge = registry.get_model("bge/bge-small-en-v1.5");
+        assert!(bge.is_some());
+        assert_eq!(bge.unwrap().dimensions, 384);
+    }
+
+    #[test]
+    fn test_load_from_yaml_missing_file() {
+        let result = ModelRegistry::load_from_yaml("nonexistent/path.yaml");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            chitin_core::error::ChitinError::Storage(msg) => {
+                assert!(msg.contains("Failed to read"));
+            }
+            other => panic!("Expected Storage error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_load_from_yaml_invalid_yaml() {
+        // Create a temp file with invalid YAML content
+        let temp_dir = std::env::temp_dir();
+        let temp_path = temp_dir.join("chitin_test_invalid.yaml");
+        std::fs::write(&temp_path, "{{{{invalid yaml content!!!!").unwrap();
+
+        let result = ModelRegistry::load_from_yaml(temp_path.to_str().unwrap());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            chitin_core::error::ChitinError::Serialization(msg) => {
+                assert!(msg.contains("Failed to parse"));
+            }
+            other => panic!("Expected Serialization error, got: {:?}", other),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    #[test]
+    fn test_loaded_models_match_expected_structure() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let yaml_path = std::path::Path::new(manifest_dir)
+            .join("../../configs/model_configs.yaml");
+        let registry = ModelRegistry::load_from_yaml(yaml_path.to_str().unwrap()).unwrap();
+
+        let openai = registry.get_model("openai/text-embedding-3-small").unwrap();
+        assert_eq!(openai.provider, "openai");
+        assert_eq!(openai.dimensions, 1536);
+        assert_eq!(openai.status, ModelStatus::Active);
+        assert_eq!(openai.zkvm_target, Some("sp1".to_string()));
+
+        let nomic = registry.get_model("nomic/nomic-embed-text-v1.5").unwrap();
+        assert_eq!(nomic.dimensions, 768);
+        assert_eq!(nomic.zkvm_target, Some("risc0".to_string()));
     }
 }
