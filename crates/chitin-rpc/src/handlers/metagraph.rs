@@ -1,11 +1,18 @@
 // crates/chitin-rpc/src/handlers/metagraph.rs
 //
 // Metagraph query handlers: GetMetagraph, GetNodeMetrics, GetWeights, GetBonds.
-// Phase 1: Stub implementations. Phase 2+ will read from the MetagraphManager.
+// Phase 4: Wired to live MetagraphManager, WeightMatrix, and BondMatrix state.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use chitin_consensus::bonds::BondMatrix;
+use chitin_consensus::epoch::EpochManager;
+use chitin_consensus::metagraph::MetagraphManager;
+use chitin_consensus::weights::WeightMatrix;
 
 // ---------------------------------------------------------------------------
 // GetMetagraph
@@ -56,11 +63,38 @@ pub struct GetMetagraphResponse {
 
 /// Handle a GetMetagraph request.
 ///
-/// Phase 1 stub: Returns an empty metagraph.
+/// Phase 4: Reads from MetagraphManager if available.
 pub async fn handle_get_metagraph(
     _request: GetMetagraphRequest,
+    metagraph_manager: Option<&Arc<RwLock<MetagraphManager>>>,
 ) -> Result<GetMetagraphResponse, String> {
-    // Phase 2: Read from chitin_consensus::MetagraphManager
+    if let Some(mm) = metagraph_manager {
+        let mm = mm.read().await;
+        if let Some(mg) = mm.current() {
+            let nodes: Vec<MetagraphNodeEntry> = mg
+                .nodes
+                .iter()
+                .map(|n| MetagraphNodeEntry {
+                    uid: n.uid,
+                    node_type: format!("{:?}", n.node_type),
+                    stake: n.stake,
+                    trust: n.trust,
+                    consensus: n.consensus,
+                    incentive: n.incentive,
+                    emission: n.emission,
+                    polyp_count: n.polyp_count,
+                    active: n.active,
+                })
+                .collect();
+            return Ok(GetMetagraphResponse {
+                epoch: mg.epoch,
+                nodes,
+                total_stake: mg.total_stake,
+                total_hardened_polyps: mg.total_hardened_polyps,
+            });
+        }
+    }
+
     Ok(GetMetagraphResponse {
         epoch: 0,
         nodes: Vec::new(),
@@ -91,11 +125,33 @@ pub struct GetNodeMetricsResponse {
 
 /// Handle a GetNodeMetrics request.
 ///
-/// Phase 1 stub: Returns not-found.
+/// Phase 4: Looks up node by UID in MetagraphManager.
 pub async fn handle_get_node_metrics(
-    _request: GetNodeMetricsRequest,
+    request: GetNodeMetricsRequest,
+    metagraph_manager: Option<&Arc<RwLock<MetagraphManager>>>,
 ) -> Result<GetNodeMetricsResponse, String> {
-    // Phase 2: Look up node in the MetagraphManager
+    if let Some(mm) = metagraph_manager {
+        let mm = mm.read().await;
+        if let Some(mg) = mm.current() {
+            if let Some(node) = mg.nodes.iter().find(|n| n.uid == request.uid) {
+                return Ok(GetNodeMetricsResponse {
+                    found: true,
+                    node: Some(MetagraphNodeEntry {
+                        uid: node.uid,
+                        node_type: format!("{:?}", node.node_type),
+                        stake: node.stake,
+                        trust: node.trust,
+                        consensus: node.consensus,
+                        incentive: node.incentive,
+                        emission: node.emission,
+                        polyp_count: node.polyp_count,
+                        active: node.active,
+                    }),
+                });
+            }
+        }
+    }
+
     Ok(GetNodeMetricsResponse {
         found: false,
         node: None,
@@ -126,13 +182,49 @@ pub struct GetWeightsResponse {
 
 /// Handle a GetWeights request.
 ///
-/// Phase 1 stub: Returns empty weights.
+/// Phase 4: Reads from WeightMatrix and converts to sparse representation.
 pub async fn handle_get_weights(
-    _request: GetWeightsRequest,
+    request: GetWeightsRequest,
+    weight_matrix: Option<&Arc<RwLock<WeightMatrix>>>,
+    epoch_manager: Option<&Arc<RwLock<EpochManager>>>,
 ) -> Result<GetWeightsResponse, String> {
-    // Phase 2: Read from the MetagraphManager
+    let current_epoch = if let Some(em) = epoch_manager {
+        em.read().await.current_epoch()
+    } else {
+        0
+    };
+
+    if let Some(wm) = weight_matrix {
+        let wm = wm.read().await;
+        let mut sparse: HashMap<u16, Vec<(u16, f64)>> = HashMap::new();
+
+        for (v_idx, row) in wm.weights.iter().enumerate() {
+            let v_uid = v_idx as u16;
+            // Apply validator_uid filter if specified
+            if let Some(filter_uid) = request.validator_uid {
+                if v_uid != filter_uid {
+                    continue;
+                }
+            }
+            let entries: Vec<(u16, f64)> = row
+                .iter()
+                .enumerate()
+                .filter(|(_, &w)| w > 0.0)
+                .map(|(c_idx, &w)| (c_idx as u16, w))
+                .collect();
+            if !entries.is_empty() {
+                sparse.insert(v_uid, entries);
+            }
+        }
+
+        return Ok(GetWeightsResponse {
+            epoch: current_epoch,
+            weights: sparse,
+        });
+    }
+
     Ok(GetWeightsResponse {
-        epoch: 0,
+        epoch: current_epoch,
         weights: HashMap::new(),
     })
 }
@@ -161,11 +253,48 @@ pub struct GetBondsResponse {
 
 /// Handle a GetBonds request.
 ///
-/// Phase 1 stub: Returns empty bonds.
-pub async fn handle_get_bonds(_request: GetBondsRequest) -> Result<GetBondsResponse, String> {
-    // Phase 2: Read from the MetagraphManager
+/// Phase 4: Reads from BondMatrix and converts to sparse representation.
+pub async fn handle_get_bonds(
+    request: GetBondsRequest,
+    bond_matrix: Option<&Arc<RwLock<BondMatrix>>>,
+    epoch_manager: Option<&Arc<RwLock<EpochManager>>>,
+) -> Result<GetBondsResponse, String> {
+    let current_epoch = if let Some(em) = epoch_manager {
+        em.read().await.current_epoch()
+    } else {
+        0
+    };
+
+    if let Some(bm) = bond_matrix {
+        let bm = bm.read().await;
+        let mut sparse: HashMap<u16, Vec<(u16, f64)>> = HashMap::new();
+
+        for (v_idx, row) in bm.bonds.iter().enumerate() {
+            let v_uid = v_idx as u16;
+            if let Some(filter_uid) = request.validator_uid {
+                if v_uid != filter_uid {
+                    continue;
+                }
+            }
+            let entries: Vec<(u16, f64)> = row
+                .iter()
+                .enumerate()
+                .filter(|(_, &b)| b > 0.0)
+                .map(|(c_idx, &b)| (c_idx as u16, b))
+                .collect();
+            if !entries.is_empty() {
+                sparse.insert(v_uid, entries);
+            }
+        }
+
+        return Ok(GetBondsResponse {
+            epoch: current_epoch,
+            bonds: sparse,
+        });
+    }
+
     Ok(GetBondsResponse {
-        epoch: 0,
+        epoch: current_epoch,
         bonds: HashMap::new(),
     })
 }

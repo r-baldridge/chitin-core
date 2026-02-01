@@ -10,15 +10,22 @@
 // infrastructure for transport, streaming, and middleware.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use http_body::Body as HttpBody;
 use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tonic::Status;
 
+use chitin_consensus::bonds::BondMatrix;
+use chitin_consensus::epoch::EpochManager;
+use chitin_consensus::metagraph::MetagraphManager;
+use chitin_consensus::weights::WeightMatrix;
+use chitin_consensus::yuma::ConsensusResult;
 use chitin_core::identity::NodeIdentity;
-use chitin_store::{InMemoryVectorIndex, RocksStore};
+use chitin_store::{HardenedStore, InMemoryVectorIndex, RocksStore};
 
 use crate::handlers;
 use crate::middleware;
@@ -107,6 +114,21 @@ pub struct ChitinRpcServer {
     signing_key: Option<[u8; 32]>,
     /// This node's publicly reachable URL.
     self_url: Option<String>,
+    // Phase 4: Shared consensus/epoch state
+    /// Epoch manager for epoch status queries.
+    epoch_manager: Option<Arc<RwLock<EpochManager>>>,
+    /// Last consensus result for result queries.
+    last_consensus_result: Option<Arc<RwLock<Option<ConsensusResult>>>>,
+    /// Weight matrix for weight queries and score submission.
+    weight_matrix: Option<Arc<RwLock<WeightMatrix>>>,
+    /// Bond matrix for bond queries.
+    bond_matrix: Option<Arc<RwLock<BondMatrix>>>,
+    /// Metagraph manager for metagraph queries.
+    metagraph_manager: Option<Arc<RwLock<MetagraphManager>>>,
+    /// Hardened store for CID-based retrieval.
+    hardened_store: Option<Arc<HardenedStore>>,
+    /// Daemon start time for uptime calculation.
+    start_time: Option<Instant>,
 }
 
 impl std::fmt::Debug for ChitinRpcServer {
@@ -141,6 +163,13 @@ impl ChitinRpcServer {
             node_identity: None,
             signing_key: None,
             self_url: None,
+            epoch_manager: None,
+            last_consensus_result: None,
+            weight_matrix: None,
+            bond_matrix: None,
+            metagraph_manager: None,
+            hardened_store: None,
+            start_time: None,
         }
     }
 
@@ -170,6 +199,48 @@ impl ChitinRpcServer {
         self
     }
 
+    /// Set the shared epoch manager for epoch status queries.
+    pub fn with_epoch_manager(mut self, em: Arc<RwLock<EpochManager>>) -> Self {
+        self.epoch_manager = Some(em);
+        self
+    }
+
+    /// Set the shared consensus result for result queries.
+    pub fn with_consensus_result(mut self, cr: Arc<RwLock<Option<ConsensusResult>>>) -> Self {
+        self.last_consensus_result = Some(cr);
+        self
+    }
+
+    /// Set the shared weight matrix for weight queries and score submission.
+    pub fn with_weight_matrix(mut self, wm: Arc<RwLock<WeightMatrix>>) -> Self {
+        self.weight_matrix = Some(wm);
+        self
+    }
+
+    /// Set the shared bond matrix for bond queries.
+    pub fn with_bond_matrix(mut self, bm: Arc<RwLock<BondMatrix>>) -> Self {
+        self.bond_matrix = Some(bm);
+        self
+    }
+
+    /// Set the shared metagraph manager for metagraph queries.
+    pub fn with_metagraph_manager(mut self, mm: Arc<RwLock<MetagraphManager>>) -> Self {
+        self.metagraph_manager = Some(mm);
+        self
+    }
+
+    /// Set the hardened store for CID-based retrieval.
+    pub fn with_hardened_store(mut self, hs: Option<Arc<HardenedStore>>) -> Self {
+        self.hardened_store = hs;
+        self
+    }
+
+    /// Set the daemon start time for uptime calculation.
+    pub fn with_start_time(mut self, st: Instant) -> Self {
+        self.start_time = Some(st);
+        self
+    }
+
     /// Start the RPC server and listen for requests.
     ///
     /// This binds to the configured address and serves requests until
@@ -188,6 +259,13 @@ impl ChitinRpcServer {
             node_identity: self.node_identity.clone(),
             signing_key: self.signing_key,
             self_url: self.self_url.clone(),
+            epoch_manager: self.epoch_manager.clone(),
+            last_consensus_result: self.last_consensus_result.clone(),
+            weight_matrix: self.weight_matrix.clone(),
+            bond_matrix: self.bond_matrix.clone(),
+            metagraph_manager: self.metagraph_manager.clone(),
+            hardened_store: self.hardened_store.clone(),
+            start_time: self.start_time,
         };
 
         Server::builder()
@@ -226,6 +304,14 @@ struct ChitinServiceImpl {
     signing_key: Option<[u8; 32]>,
     /// This node's publicly reachable URL.
     self_url: Option<String>,
+    // Phase 4: Shared consensus/epoch state
+    epoch_manager: Option<Arc<RwLock<EpochManager>>>,
+    last_consensus_result: Option<Arc<RwLock<Option<ConsensusResult>>>>,
+    weight_matrix: Option<Arc<RwLock<WeightMatrix>>>,
+    bond_matrix: Option<Arc<RwLock<BondMatrix>>>,
+    metagraph_manager: Option<Arc<RwLock<MetagraphManager>>>,
+    hardened_store: Option<Arc<HardenedStore>>,
+    start_time: Option<Instant>,
 }
 
 impl ChitinServiceImpl {
@@ -325,9 +411,9 @@ impl ChitinServiceImpl {
                 .await
             }
             "query/cid" => {
+                let hardened_store = self.hardened_store.clone();
                 dispatch_handler(request.params, |r| {
-                    let store = self.store.clone();
-                    async move { handlers::query::handle_get_by_cid(&store, r).await }
+                    async move { handlers::query::handle_get_by_cid(hardened_store.as_ref(), r).await }
                 })
                 .await
             }
@@ -341,8 +427,10 @@ impl ChitinServiceImpl {
 
             // Node
             "node/info" => {
+                let identity = self.node_identity.clone();
+                let start_time = self.start_time;
                 dispatch_handler(request.params, |r| async move {
-                    handlers::node::handle_get_node_info(r).await
+                    handlers::node::handle_get_node_info(r, identity.as_ref(), start_time).await
                 })
                 .await
             }
@@ -418,60 +506,72 @@ impl ChitinServiceImpl {
 
             // Metagraph
             "metagraph/get" => {
+                let mm = self.metagraph_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::metagraph::handle_get_metagraph(r).await
+                    handlers::metagraph::handle_get_metagraph(r, mm.as_ref()).await
                 })
                 .await
             }
             "metagraph/node" => {
+                let mm = self.metagraph_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::metagraph::handle_get_node_metrics(r).await
+                    handlers::metagraph::handle_get_node_metrics(r, mm.as_ref()).await
                 })
                 .await
             }
             "metagraph/weights" => {
+                let wm = self.weight_matrix.clone();
+                let em = self.epoch_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::metagraph::handle_get_weights(r).await
+                    handlers::metagraph::handle_get_weights(r, wm.as_ref(), em.as_ref()).await
                 })
                 .await
             }
             "metagraph/bonds" => {
+                let bm = self.bond_matrix.clone();
+                let em = self.epoch_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::metagraph::handle_get_bonds(r).await
+                    handlers::metagraph::handle_get_bonds(r, bm.as_ref(), em.as_ref()).await
                 })
                 .await
             }
 
             // Validation
             "validation/scores" => {
+                let wm = self.weight_matrix.clone();
+                let em = self.epoch_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::validation::handle_submit_scores(r).await
+                    handlers::validation::handle_submit_scores(r, wm.as_ref(), em.as_ref()).await
                 })
                 .await
             }
             "validation/epoch" => {
+                let em = self.epoch_manager.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::validation::handle_get_epoch_status(r).await
+                    handlers::validation::handle_get_epoch_status(r, em.as_ref()).await
                 })
                 .await
             }
             "validation/result" => {
+                let cr = self.last_consensus_result.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::validation::handle_get_consensus_result(r).await
+                    handlers::validation::handle_get_consensus_result(r, cr.as_ref()).await
                 })
                 .await
             }
 
             // Sync
             "sync/status" => {
+                let peer_count = self.peer_count;
                 dispatch_handler(request.params, |r| async move {
-                    handlers::sync::handle_get_sync_status(r).await
+                    handlers::sync::handle_get_sync_status(r, peer_count).await
                 })
                 .await
             }
             "sync/trigger" => {
+                let peer_count = self.peer_count;
                 dispatch_handler(request.params, |r| async move {
-                    handlers::sync::handle_trigger_sync(r).await
+                    handlers::sync::handle_trigger_sync(r, peer_count).await
                 })
                 .await
             }

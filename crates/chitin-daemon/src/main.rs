@@ -3,13 +3,18 @@
 // Binary entrypoint for the Chitin Protocol daemon.
 //
 // Initializes tracing, parses CLI arguments, loads configuration,
-// and starts the appropriate node type (Coral, Tide, or Hybrid).
+// constructs shared state, spawns epoch scheduler, and starts the
+// appropriate node type (Coral, Tide, or Hybrid).
 
 mod config;
+mod consensus_runner;
 mod coral;
+mod epoch_events;
 mod gossip;
+mod hardening_pipeline;
 mod peers;
 mod scheduler;
+mod shared;
 mod state;
 mod sync_loop;
 mod tide;
@@ -19,12 +24,14 @@ use std::sync::Arc;
 use clap::Parser;
 use config::DaemonConfig;
 use coral::CoralNode;
+use scheduler::EpochScheduler;
+use shared::DaemonSharedState;
 use state::{NodeState, NodeStateMachine};
 use tide::TideNode;
 
 use chitin_core::identity::{NodeIdentity, NodeType};
 use chitin_rpc::{ChitinRpcServer, RpcConfig};
-use chitin_store::InMemoryVectorIndex;
+use chitin_store::{HardenedStore, InMemoryVectorIndex, IpfsClient, RocksStore};
 use peers::PeerRegistry;
 
 /// Chitin Protocol daemon — runs Coral and/or Tide node processes.
@@ -81,6 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         daemon_config.rpc_port
     );
     tracing::info!("P2P port: {}", daemon_config.p2p_port);
+    tracing::info!("Blocks per epoch: {}", daemon_config.blocks_per_epoch);
 
     // ---------------------------------------------------------------
     // Phase 2: Load cryptographic identity from key files.
@@ -95,6 +103,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("Node DID: {}", node_identity.did);
     }
+
+    // ---------------------------------------------------------------
+    // Phase 4: Construct shared state infrastructure.
+    // ---------------------------------------------------------------
+
+    // Create IPFS client and HardenedStore (optional — requires IPFS running).
+    let ipfs_client = IpfsClient::new(&daemon_config.ipfs_api_url);
+    let data_dir = expand_tilde(&daemon_config.data_dir);
+    let hardened_db_path = format!("{}/hardened_rocksdb", data_dir);
+
+    let hardened_store = match RocksStore::open(&hardened_db_path) {
+        Ok(cache_db) => {
+            let hs = HardenedStore::new(cache_db, ipfs_client);
+            tracing::info!("HardenedStore initialized at {}", hardened_db_path);
+            Some(Arc::new(hs))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to open HardenedStore: {}. Hardening disabled.", e);
+            None
+        }
+    };
+
+    // Create DaemonSharedState.
+    let shared_state = DaemonSharedState::new(
+        daemon_config.blocks_per_epoch,
+        hardened_store.clone(),
+    );
+
+    // Create broadcast channel for epoch events.
+    let (event_tx, _) = tokio::sync::broadcast::channel::<epoch_events::EpochEvent>(64);
 
     // Initialize the node state machine.
     let mut state_machine = NodeStateMachine::new();
@@ -116,7 +154,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut rpc_server = ChitinRpcServer::new(rpc_config, store.clone(), index.clone())
                 .with_peer_info(daemon_config.peers.clone())
                 .with_identity(node_identity.clone(), signing_key)
-                .with_self_url(daemon_config.self_url.clone());
+                .with_self_url(daemon_config.self_url.clone())
+                .with_epoch_manager(shared_state.epoch_manager.clone())
+                .with_consensus_result(shared_state.last_consensus_result.clone())
+                .with_weight_matrix(shared_state.weight_matrix.clone())
+                .with_bond_matrix(shared_state.bond_matrix.clone())
+                .with_metagraph_manager(shared_state.metagraph_manager.clone())
+                .with_hardened_store(hardened_store.clone())
+                .with_start_time(shared_state.start_time);
 
             // Wire up peer networking if peers are configured.
             if !daemon_config.peers.is_empty() {
@@ -155,6 +200,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            // Spawn epoch scheduler.
+            let mut scheduler = EpochScheduler::new(
+                daemon_config.blocks_per_epoch,
+                shared_state.epoch_manager.clone(),
+                event_tx.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = scheduler.run().await {
+                    tracing::error!("Epoch scheduler error: {}", e);
+                }
+            });
+
             // Spawn RPC server in background, run node in foreground.
             tokio::spawn(async move {
                 if let Err(e) = rpc_server.start().await {
@@ -165,7 +222,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node.start().await?;
         }
         "tide" => {
-            let node = TideNode::new(&daemon_config)?;
+            // Tide-only mode needs a store for reading polyps.
+            let rocksdb_path = format!("{}/rocksdb", data_dir);
+            let store = Arc::new(
+                RocksStore::open(&rocksdb_path)
+                    .map_err(|e| format!("Failed to open RocksDB: {}", e))?,
+            );
+
+            let event_rx = event_tx.subscribe();
+            let node = TideNode::new(
+                &daemon_config,
+                event_rx,
+                shared_state.clone(),
+                store,
+            )?;
+
+            // Spawn epoch scheduler.
+            let mut scheduler = EpochScheduler::new(
+                daemon_config.blocks_per_epoch,
+                shared_state.epoch_manager.clone(),
+                event_tx.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = scheduler.run().await {
+                    tracing::error!("Epoch scheduler error: {}", e);
+                }
+            });
+
             node.start().await?;
         }
         "hybrid" => {
@@ -182,7 +265,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut rpc_server = ChitinRpcServer::new(rpc_config, store.clone(), index.clone())
                 .with_peer_info(daemon_config.peers.clone())
                 .with_identity(node_identity.clone(), signing_key)
-                .with_self_url(daemon_config.self_url.clone());
+                .with_self_url(daemon_config.self_url.clone())
+                .with_epoch_manager(shared_state.epoch_manager.clone())
+                .with_consensus_result(shared_state.last_consensus_result.clone())
+                .with_weight_matrix(shared_state.weight_matrix.clone())
+                .with_bond_matrix(shared_state.bond_matrix.clone())
+                .with_metagraph_manager(shared_state.metagraph_manager.clone())
+                .with_hardened_store(hardened_store.clone())
+                .with_start_time(shared_state.start_time);
 
             // Wire up peer networking if peers are configured.
             if !daemon_config.peers.is_empty() {
@@ -221,7 +311,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            let tide = TideNode::new(&daemon_config)?;
+            // Create Tide node with epoch event receiver.
+            let event_rx = event_tx.subscribe();
+            let tide = TideNode::new(
+                &daemon_config,
+                event_rx,
+                shared_state.clone(),
+                store.clone(),
+            )?;
+
+            // Spawn epoch scheduler.
+            let mut scheduler = EpochScheduler::new(
+                daemon_config.blocks_per_epoch,
+                shared_state.epoch_manager.clone(),
+                event_tx.clone(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = scheduler.run().await {
+                    tracing::error!("Epoch scheduler error: {}", e);
+                }
+            });
 
             // Spawn RPC server in background, run both nodes concurrently.
             tokio::spawn(async move {
