@@ -1,19 +1,6 @@
 // crates/chitin-store/src/hardened.rs
 //
 // HardenedStore: CID-indexed immutable Polyp storage.
-//
-// A hardened Polyp is one that has passed Yuma-Semantic Consensus, been
-// IPFS-pinned, CID-anchored, and attested by validators. The HardenedStore
-// provides:
-//
-//   - `store_hardened`: Serialize a Polyp, put it to IPFS (Phase 2), and
-//     cache it locally in RocksDB under its CID key.
-//   - `get_hardened`: Try local RocksDB cache first, then fall back to IPFS.
-//   - `is_hardened`: Check whether a Polyp ID has a CID mapping recorded.
-//
-// Key format in RocksDB:
-//   - `hardened:cid:{cid}` -> JSON-serialized Polyp
-//   - `hardened:map:{polyp_uuid}` -> CID string (reverse lookup)
 
 use uuid::Uuid;
 
@@ -26,8 +13,7 @@ use crate::rocks::RocksStore;
 /// Store for CID-indexed, immutable (hardened) Polyps.
 ///
 /// Wraps a local `RocksStore` (cache) and an `IpfsClient` (persistent
-/// content-addressed storage). In Phase 1 the IPFS methods are stubs,
-/// so only the local cache is functional.
+/// content-addressed storage).
 #[derive(Debug)]
 pub struct HardenedStore {
     /// Local RocksDB cache for fast CID-based lookups.
@@ -52,18 +38,15 @@ impl HardenedStore {
         format!("hardened:map:{}", polyp_id).into_bytes()
     }
 
-    /// Harden a Polyp: serialize it, put to IPFS (Phase 2), and cache locally.
+    /// Harden a Polyp: serialize it, put to IPFS, and cache locally.
     ///
-    /// Returns the CID string assigned by IPFS. In Phase 1, the IPFS `put`
-    /// call is a `todo!()` stub, so this method will panic if actually invoked.
-    /// For Phase 1 local-only usage, callers should use `store_hardened_local`
-    /// with a pre-computed or placeholder CID instead.
-    pub fn store_hardened(&self, polyp: &Polyp) -> Result<String, ChitinError> {
+    /// Returns the CID string assigned by IPFS.
+    pub async fn store_hardened(&self, polyp: &Polyp) -> Result<String, ChitinError> {
         let json = serde_json::to_vec(polyp)
             .map_err(|e| ChitinError::Serialization(e.to_string()))?;
 
-        // Phase 2: put to IPFS and get back a real CID.
-        let cid = self.ipfs.put(&json);
+        // Put to IPFS and get back a real CID.
+        let cid = self.ipfs.put(&json).await?;
 
         // Cache locally under the CID key.
         self.local_cache.put_bytes(&Self::cid_key(&cid), &json)?;
@@ -77,8 +60,7 @@ impl HardenedStore {
 
     /// Store a hardened Polyp locally with a known CID (bypasses IPFS).
     ///
-    /// Useful in Phase 1 where IPFS is not yet available, or when
-    /// re-caching a Polyp whose CID is already known.
+    /// Useful when re-caching a Polyp whose CID is already known.
     pub fn store_hardened_local(&self, polyp: &Polyp, cid: &str) -> Result<(), ChitinError> {
         let json = serde_json::to_vec(polyp)
             .map_err(|e| ChitinError::Serialization(e.to_string()))?;
@@ -92,9 +74,8 @@ impl HardenedStore {
 
     /// Retrieve a hardened Polyp by its CID.
     ///
-    /// Tries the local RocksDB cache first. If not found, falls back to IPFS
-    /// (Phase 2 stub — will panic if the local cache misses).
-    pub fn get_hardened(&self, cid: &str) -> Result<Polyp, ChitinError> {
+    /// Tries the local RocksDB cache first. If not found, falls back to IPFS.
+    pub async fn get_hardened(&self, cid: &str) -> Result<Polyp, ChitinError> {
         // Try local cache first.
         if let Some(bytes) = self.local_cache.get_bytes(&Self::cid_key(cid))? {
             let polyp: Polyp = serde_json::from_slice(&bytes)
@@ -102,8 +83,8 @@ impl HardenedStore {
             return Ok(polyp);
         }
 
-        // Fallback: fetch from IPFS (Phase 2 — will panic on todo!()).
-        let bytes = self.ipfs.get_by_cid(cid);
+        // Fallback: fetch from IPFS.
+        let bytes = self.ipfs.get_by_cid(cid).await?;
         let polyp: Polyp = serde_json::from_slice(&bytes)
             .map_err(|e| ChitinError::Serialization(e.to_string()))?;
 

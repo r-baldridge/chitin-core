@@ -66,10 +66,16 @@ impl SetReconciler {
     /// Requires a P2P client handle which is not yet available.
     pub fn request_missing(
         &self,
-        _missing: &[Uuid],
+        missing: &[Uuid],
     ) -> Result<(), ChitinError> {
-        // Phase 2: Request missing Polyps from remote peer via P2P
-        todo!("Phase 2: SetReconciler::request_missing — fetch Polyps from remote peer")
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        // No P2P connection available yet — return error for non-empty requests.
+        Err(ChitinError::Network(
+            "no P2P connection available".to_string(),
+        ))
     }
 }
 
@@ -175,5 +181,26 @@ mod tests {
         let result = reconciler.compute_diff(&local_vbf, &invalid_bytes);
 
         assert!(result.is_err(), "Should return error for invalid remote bytes");
+    }
+
+    #[test]
+    fn request_missing_empty_ok() {
+        let reconciler = SetReconciler::new();
+        let result = reconciler.request_missing(&[]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn request_missing_nonempty_returns_network_error() {
+        let reconciler = SetReconciler::new();
+        let ids = vec![Uuid::now_v7(), Uuid::now_v7()];
+        let result = reconciler.request_missing(&ids);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ChitinError::Network(msg) => {
+                assert!(msg.contains("no P2P connection"));
+            }
+            other => panic!("Expected Network error, got: {:?}", other),
+        }
     }
 }

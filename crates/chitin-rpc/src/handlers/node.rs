@@ -1,8 +1,13 @@
 // crates/chitin-rpc/src/handlers/node.rs
 //
 // Node info and health handlers: GetNodeInfo, GetHealth, GetPeers.
+// Phase 4: GetNodeInfo wired to real identity and uptime.
+
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
+
+use chitin_core::identity::NodeIdentity;
 
 // ---------------------------------------------------------------------------
 // GetNodeInfo
@@ -29,21 +34,52 @@ pub struct GetNodeInfoResponse {
 
 /// Handle a GetNodeInfo request.
 ///
-/// Phase 1: Returns static placeholder info. Phase 2+ will return
-/// actual node identity and capabilities from the daemon state.
+/// Phase 4: Returns actual node identity, DID, and uptime.
 pub async fn handle_get_node_info(
     _request: GetNodeInfoRequest,
+    identity: Option<&NodeIdentity>,
+    start_time: Option<Instant>,
 ) -> Result<GetNodeInfoResponse, String> {
+    let (node_type, did) = match identity {
+        Some(id) => {
+            let nt = format!("{:?}", id.node_type);
+            let d = if id.is_placeholder() {
+                None
+            } else {
+                Some(id.did.clone())
+            };
+            (nt, d)
+        }
+        None => ("Hybrid".to_string(), None),
+    };
+
+    let uptime = start_time
+        .map(|st| st.elapsed().as_secs())
+        .unwrap_or(0);
+
+    let mut capabilities = vec![
+        "polyp-submit".to_string(),
+        "query".to_string(),
+        "local-store".to_string(),
+    ];
+
+    // Add validation capability for Tide/Hybrid nodes
+    if let Some(id) = identity {
+        match id.node_type {
+            chitin_core::identity::NodeType::Tide | chitin_core::identity::NodeType::Hybrid => {
+                capabilities.push("validate".to_string());
+                capabilities.push("consensus".to_string());
+            }
+            _ => {}
+        }
+    }
+
     Ok(GetNodeInfoResponse {
-        node_type: "Hybrid".to_string(),
+        node_type,
         version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime_seconds: 0, // Phase 2: track actual uptime
-        did: None,
-        capabilities: vec![
-            "polyp-submit".to_string(),
-            "query".to_string(),
-            "local-store".to_string(),
-        ],
+        uptime_seconds: uptime,
+        did,
+        capabilities,
     })
 }
 

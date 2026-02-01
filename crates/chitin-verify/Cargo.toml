@@ -13,6 +13,7 @@ hex = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 async-trait = "0.1"
+serde_yaml = "0.9"
 
 # TODO: SP1 is not on crates.io as sp1-sdk yet. Add when available.
 # sp1-sdk = "..."

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use chitin_core::hash_embedding;
 use chitin_core::traits::{PolypStore, VectorIndex};
-use chitin_store::{InMemoryVectorIndex, RocksStore};
+use chitin_store::{HardenedStore, InMemoryVectorIndex, RocksStore};
 
 // ---------------------------------------------------------------------------
 // SemanticSearch
@@ -207,22 +207,39 @@ pub struct GetByCidResponse {
 
 /// Handle a GetByCid request.
 ///
-/// Phase 1 stub: Returns not-found since IPFS/hardened store
-/// is not yet wired into the RPC layer.
+/// Phase 4: Retrieves a hardened Polyp by CID from the HardenedStore.
 pub async fn handle_get_by_cid(
-    _store: &Arc<RocksStore>,
+    hardened_store: Option<&Arc<HardenedStore>>,
     request: GetByCidRequest,
 ) -> Result<GetByCidResponse, String> {
-    // Phase 1: The hardened store is not yet wired into the RPC server.
-    // We would need a HardenedStore reference to look up by CID.
-    tracing::warn!(
-        cid = %request.cid,
-        "GetByCid: Phase 1 stub - hardened store not yet wired"
-    );
-    Ok(GetByCidResponse {
-        polyp: None,
-        found: false,
-    })
+    match hardened_store {
+        Some(hs) => {
+            match hs.get_hardened(&request.cid).await {
+                Ok(polyp) => {
+                    let json = serde_json::to_value(&polyp)
+                        .map_err(|e| format!("Failed to serialize polyp: {}", e))?;
+                    Ok(GetByCidResponse {
+                        polyp: Some(json),
+                        found: true,
+                    })
+                }
+                Err(_) => Ok(GetByCidResponse {
+                    polyp: None,
+                    found: false,
+                }),
+            }
+        }
+        None => {
+            tracing::warn!(
+                cid = %request.cid,
+                "GetByCid: Hardened store not configured"
+            );
+            Ok(GetByCidResponse {
+                polyp: None,
+                found: false,
+            })
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

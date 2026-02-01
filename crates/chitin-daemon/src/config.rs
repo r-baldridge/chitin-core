@@ -54,6 +54,10 @@ pub struct DaemonConfig {
     /// Path to the coldkey public key file (hex-encoded ed25519 public key).
     #[serde(default = "default_coldkey_pub_path")]
     pub coldkey_pub_path: String,
+
+    /// Number of blocks per epoch (default 360, ~1 hour at 10s/block).
+    #[serde(default = "default_blocks_per_epoch")]
+    pub blocks_per_epoch: u64,
 }
 
 fn default_node_type() -> String {
@@ -92,6 +96,10 @@ fn default_coldkey_pub_path() -> String {
     "~/.chitin/keys/coldkey.pub".to_string()
 }
 
+fn default_blocks_per_epoch() -> u64 {
+    360
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -106,6 +114,7 @@ impl Default for DaemonConfig {
             self_url: None,
             hotkey_path: default_hotkey_path(),
             coldkey_pub_path: default_coldkey_pub_path(),
+            blocks_per_epoch: default_blocks_per_epoch(),
         }
     }
 }
