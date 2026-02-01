@@ -38,6 +38,7 @@ pub struct AnnounceResponse {
 /// Handle a peer/announce request.
 ///
 /// Accepts a node_id and url from the announcing peer, returns this node's info.
+/// In Phase 2, returns the real DID and self URL if available.
 pub async fn handle_announce(
     request: AnnounceRequest,
 ) -> Result<AnnounceResponse, String> {
@@ -47,9 +48,35 @@ pub async fn handle_announce(
         request.url
     );
 
+    // Phase 2: DID and URL are injected via the service-level context.
+    // The actual values are filled in by the dispatch layer that has access
+    // to node_identity and self_url. This handler returns placeholders that
+    // will be overridden by the dispatch layer if identity is available.
     Ok(AnnounceResponse {
-        node_id: None, // Phase 1: no DID identity wired yet
-        url: None,     // Caller can set from config
+        node_id: None, // Overridden by dispatch if identity is set
+        url: None,     // Overridden by dispatch if self_url is set
+        message: "Announcement received".to_string(),
+    })
+}
+
+/// Handle a peer/announce request with node identity context.
+///
+/// This version receives the node's DID and self URL from the service layer
+/// and includes them in the response.
+pub async fn handle_announce_with_identity(
+    request: AnnounceRequest,
+    self_did: Option<String>,
+    self_url: Option<String>,
+) -> Result<AnnounceResponse, String> {
+    tracing::info!(
+        "Received peer announcement from node_id={:?} url={:?}",
+        request.node_id,
+        request.url
+    );
+
+    Ok(AnnounceResponse {
+        node_id: self_did,
+        url: self_url,
         message: "Announcement received".to_string(),
     })
 }
@@ -89,6 +116,31 @@ pub async fn handle_receive_polyp(
 ) -> Result<ReceivePolypResponse, String> {
     let polyp = request.polyp;
     let polyp_id = polyp.id;
+
+    // Phase 2: Log signature verification status if polyp has a signature.
+    if polyp.signature.is_some() {
+        let creator_hotkey = &polyp.subject.provenance.creator.hotkey;
+        match polyp.verify_signature(creator_hotkey) {
+            Ok(true) => {
+                tracing::info!("Received polyp {} with valid signature", polyp_id);
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    "Received polyp {} with INVALID signature (soft enforcement)",
+                    polyp_id
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Received polyp {} signature verification error: {}",
+                    polyp_id,
+                    e
+                );
+            }
+        }
+    } else {
+        tracing::debug!("Received unsigned polyp {} (backward compatible)", polyp_id);
+    }
 
     // Dedup check: see if we already have this polyp.
     let existing = store
@@ -181,4 +233,48 @@ pub async fn handle_list_polyp_ids(
 
     let count = all_ids.len();
     Ok(ListPolypIdsResponse { ids: all_ids, count })
+}
+
+// ---------------------------------------------------------------------------
+// peer/discover
+// ---------------------------------------------------------------------------
+
+/// Request to discover known peers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoverPeersRequest {}
+
+/// Information about a known peer in the discovery response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredPeer {
+    /// The peer's URL.
+    pub url: String,
+    /// The peer's DID, if known.
+    pub did: Option<String>,
+    /// Whether the peer was reachable at last check.
+    pub alive: bool,
+}
+
+/// Response containing known live peers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoverPeersResponse {
+    /// Known peers with their URLs and DIDs.
+    pub peers: Vec<DiscoveredPeer>,
+    /// Total count.
+    pub count: usize,
+}
+
+/// Handle a peer/discover request.
+///
+/// Returns the list of known live peer URLs and DIDs from the peer registry
+/// information available to this node. The actual peer data is provided by
+/// the service dispatch layer.
+pub async fn handle_discover_peers(
+    _request: DiscoverPeersRequest,
+    peer_data: Vec<DiscoveredPeer>,
+) -> Result<DiscoverPeersResponse, String> {
+    let count = peer_data.len();
+    Ok(DiscoverPeersResponse {
+        peers: peer_data,
+        count,
+    })
 }

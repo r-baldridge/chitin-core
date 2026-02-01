@@ -3,6 +3,7 @@
 // `chitin init` — scaffold the default configuration directory and files.
 
 use chitin_core::crypto::Keypair;
+use chitin_core::identity::NodeIdentity;
 use std::fs;
 use std::path::PathBuf;
 
@@ -56,6 +57,7 @@ log_level = "info"
         fs::create_dir_all(&keys_dir)?;
     }
 
+    // Generate hotkey (operational key).
     let hotkey_path = keys_dir.join("hotkey.pub");
     if !hotkey_path.exists() {
         let keypair = Keypair::generate();
@@ -70,11 +72,55 @@ log_level = "info"
         let secret_path = keys_dir.join("hotkey.secret");
         fs::write(&secret_path, hex_encode(&signing_key_bytes))?;
 
-        println!("Generated keypair:");
+        println!("Generated hotkey:");
         println!("  Public key: {}", pubkey_hex);
         println!("  Saved to:   {}", hotkey_path.display());
     } else {
-        println!("Keypair already exists: {}", hotkey_path.display());
+        println!("Hotkey already exists: {}", hotkey_path.display());
+    }
+
+    // Generate coldkey (long-term identity key).
+    let coldkey_pub_path = keys_dir.join("coldkey.pub");
+    if !coldkey_pub_path.exists() {
+        let coldkey_pair = Keypair::generate();
+        let coldkey_pub = coldkey_pair.public_key_bytes();
+        let coldkey_pub_hex = hex_encode(&coldkey_pub);
+
+        // Save coldkey public key as hex.
+        fs::write(&coldkey_pub_path, &coldkey_pub_hex)?;
+
+        // Save coldkey secret key as hex.
+        let coldkey_secret_bytes = coldkey_pair.signing_key.to_bytes();
+        let coldkey_secret_path = keys_dir.join("coldkey.secret");
+        fs::write(&coldkey_secret_path, hex_encode(&coldkey_secret_bytes))?;
+
+        // Derive and display the DID.
+        let did = NodeIdentity::derive_did(&coldkey_pub);
+
+        println!("Generated coldkey:");
+        println!("  Public key: {}", coldkey_pub_hex);
+        println!("  DID:        {}", did);
+        println!("  Saved to:   {}", coldkey_pub_path.display());
+        println!("  IMPORTANT:  Back up coldkey.secret securely — it controls your node identity.");
+    } else {
+        // Read existing coldkey to display DID.
+        if let Ok(hex_str) = fs::read_to_string(&coldkey_pub_path) {
+            if let Some(bytes) = hex_decode_bytes(hex_str.trim()) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    let did = NodeIdentity::derive_did(&arr);
+                    println!("Coldkey already exists: {}", coldkey_pub_path.display());
+                    println!("  DID: {}", did);
+                } else {
+                    println!("Coldkey already exists: {}", coldkey_pub_path.display());
+                }
+            } else {
+                println!("Coldkey already exists: {}", coldkey_pub_path.display());
+            }
+        } else {
+            println!("Coldkey already exists: {}", coldkey_pub_path.display());
+        }
     }
 
     println!();
@@ -93,4 +139,15 @@ fn get_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// Encode bytes as a hex string.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Decode a hex string into bytes. Returns None if the string is invalid hex.
+fn hex_decode_bytes(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
 }

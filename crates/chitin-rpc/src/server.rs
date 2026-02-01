@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use tonic::transport::Server;
 use tonic::Status;
 
+use chitin_core::identity::NodeIdentity;
 use chitin_store::{InMemoryVectorIndex, RocksStore};
 
 use crate::handlers;
@@ -100,6 +101,12 @@ pub struct ChitinRpcServer {
     peer_count: usize,
     /// Configured peer URLs.
     peer_urls: Vec<String>,
+    /// Node identity for provenance and announce responses (Phase 2).
+    node_identity: Option<NodeIdentity>,
+    /// Signing key for polyp signing (Phase 2).
+    signing_key: Option<[u8; 32]>,
+    /// This node's publicly reachable URL.
+    self_url: Option<String>,
 }
 
 impl std::fmt::Debug for ChitinRpcServer {
@@ -131,6 +138,9 @@ impl ChitinRpcServer {
             gossip_callback: None,
             peer_count: 0,
             peer_urls: Vec::new(),
+            node_identity: None,
+            signing_key: None,
+            self_url: None,
         }
     }
 
@@ -144,6 +154,19 @@ impl ChitinRpcServer {
     pub fn with_peer_info(mut self, peer_urls: Vec<String>) -> Self {
         self.peer_count = peer_urls.len();
         self.peer_urls = peer_urls;
+        self
+    }
+
+    /// Set the node identity and optional signing key for provenance and polyp signing.
+    pub fn with_identity(mut self, identity: NodeIdentity, signing_key: Option<[u8; 32]>) -> Self {
+        self.node_identity = Some(identity);
+        self.signing_key = signing_key;
+        self
+    }
+
+    /// Set this node's publicly reachable URL for announce responses.
+    pub fn with_self_url(mut self, self_url: Option<String>) -> Self {
+        self.self_url = self_url;
         self
     }
 
@@ -162,6 +185,9 @@ impl ChitinRpcServer {
             gossip_callback: self.gossip_callback.clone(),
             peer_count: self.peer_count,
             peer_urls: self.peer_urls.clone(),
+            node_identity: self.node_identity.clone(),
+            signing_key: self.signing_key,
+            self_url: self.self_url.clone(),
         };
 
         Server::builder()
@@ -194,6 +220,12 @@ struct ChitinServiceImpl {
     peer_count: usize,
     /// Configured peer URLs (for peers endpoint).
     peer_urls: Vec<String>,
+    /// Node identity for provenance and announce responses (Phase 2).
+    node_identity: Option<NodeIdentity>,
+    /// Signing key for polyp signing (Phase 2).
+    signing_key: Option<[u8; 32]>,
+    /// This node's publicly reachable URL.
+    self_url: Option<String>,
 }
 
 impl ChitinServiceImpl {
@@ -205,11 +237,19 @@ impl ChitinServiceImpl {
                 let store = self.store.clone();
                 let index = self.index.clone();
                 let gossip_cb = self.gossip_callback.clone();
+                let identity = self.node_identity.clone();
+                let sign_key = self.signing_key;
                 let req: Result<handlers::polyp::SubmitPolypRequest, _> =
                     serde_json::from_value(request.params);
                 match req {
                     Ok(r) => {
-                        match handlers::polyp::handle_submit_polyp(&store, &index, r).await {
+                        match handlers::polyp::handle_submit_polyp_with_identity(
+                            &store,
+                            &index,
+                            r,
+                            identity.as_ref(),
+                            sign_key.as_ref(),
+                        ).await {
                             Ok(resp) => {
                                 // Trigger gossip broadcast if callback is set.
                                 if let Some(cb) = gossip_cb {
@@ -458,8 +498,10 @@ impl ChitinServiceImpl {
 
             // Peer Relay
             "peer/announce" => {
+                let self_did = self.node_identity.as_ref().map(|id| id.did.clone());
+                let self_url = self.self_url.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::peer::handle_announce(r).await
+                    handlers::peer::handle_announce_with_identity(r, self_did, self_url).await
                 })
                 .await
             }
@@ -479,6 +521,21 @@ impl ChitinServiceImpl {
                     async move {
                         handlers::peer::handle_list_polyp_ids(&store, r).await
                     }
+                })
+                .await
+            }
+            "peer/discover" => {
+                let peer_urls = self.peer_urls.clone();
+                dispatch_handler(request.params, |r| async move {
+                    let peer_data: Vec<handlers::peer::DiscoveredPeer> = peer_urls
+                        .into_iter()
+                        .map(|url| handlers::peer::DiscoveredPeer {
+                            url,
+                            did: None,
+                            alive: false,
+                        })
+                        .collect();
+                    handlers::peer::handle_discover_peers(r, peer_data).await
                 })
                 .await
             }
