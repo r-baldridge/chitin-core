@@ -1,0 +1,13 @@
+[package]
+name = "chitin-reputation"
+version = "0.1.0"
+edition = "2021"
+description = "Trust matrix, OpenRank, domain context, and decay for the Chitin Protocol"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+chitin-core = { path = "../chitin-core" }
+chitin-store = { path = "../chitin-store" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+async-trait = "0.1"

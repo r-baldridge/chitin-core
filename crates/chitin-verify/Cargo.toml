@@ -1,0 +1,19 @@
+[package]
+name = "chitin-verify"
+version = "0.1.0"
+edition = "2021"
+description = "ZK proof generation and verification for the Chitin Protocol"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+chitin-core = { path = "../chitin-core" }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+async-trait = "0.1"
+
+# TODO: SP1 is not on crates.io as sp1-sdk yet. Add when available.
+# sp1-sdk = "..."
+# risc0-zkvm = "..."

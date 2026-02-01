@@ -1,0 +1,17 @@
+[package]
+name = "chitin-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Vector Bloom Filters, set reconciliation, and range sync for the Chitin Protocol"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+chitin-core = { path = "../chitin-core" }
+chitin-store = { path = "../chitin-store" }
+chitin-p2p = { path = "../chitin-p2p" }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+serde = { version = "1", features = ["derive"] }
+bloomfilter = "1"
+thiserror = "2"
+async-trait = "0.1"

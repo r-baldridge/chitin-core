@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package chitin.metagraph;
+
+// Request the current metagraph state.
+message GetMetagraphRequest {
+    // Optional: request metagraph at a specific epoch (0 = current).
+    uint64 epoch = 1;
+}
+
+// Full metagraph snapshot response.
+message MetagraphResponse {
+    uint64            epoch                = 1;
+    uint64            block                = 2;
+    repeated NodeInfo nodes                = 3;
+    uint64            total_stake          = 4;
+    uint64            total_hardened_polyps = 5;
+    uint64            emission_rate        = 6;
+    WeightMatrix      weights              = 7;
+    WeightMatrix      bonds                = 8;
+}
+
+// Information about a single node in the metagraph.
+message NodeInfo {
+    uint32 uid          = 1;   // Network-assigned unique ID
+    bytes  hotkey       = 2;   // Operational identity
+    bytes  coldkey      = 3;   // Staking identity
+    string node_type    = 4;   // "Coral", "Tide", or "Hybrid"
+    uint64 stake        = 5;   // Total staked CTN (own + delegated)
+    double trust        = 6;   // Trust score (EMA of validation performance)
+    double consensus    = 7;   // Consensus score (agreement with other validators)
+    double incentive    = 8;   // Incentive score (share of epoch rewards)
+    uint64 emission     = 9;   // Emission received this epoch
+    uint64 polyp_count  = 10;  // Number of Polyps produced or validated
+    uint64 last_active  = 11;  // Last active epoch
+    string axon_addr    = 12;  // Network address (multiaddr)
+    bool   active       = 13;  // Whether currently registered and active
+}
+
+// Sparse weight/bond matrix representation.
+message WeightMatrix {
+    // Map from validator UID to list of (coral_uid, value) pairs.
+    repeated WeightRow rows = 1;
+}
+
+message WeightRow {
+    uint32           validator_uid = 1;
+    repeated WEntry  entries       = 2;
+}
+
+message WEntry {
+    uint32 coral_uid = 1;
+    double value     = 2;
+}

@@ -1,0 +1,32 @@
+# configs/consensus_params.yaml
+consensus:
+  # Epoch duration in blocks
+  epoch_length: 360               # ~1 hour at 10s/block
+
+  # Yuma consensus parameters
+  kappa: 0.5                      # Stake-weighted median threshold
+  bond_penalty: 0.1               # Bond decay rate for disagreeing validators
+  alpha: 0.1                      # EMA smoothing factor
+
+  # Weight constraints
+  max_weight_fraction: 0.5        # Max weight one validator can assign to one coral
+  min_validators_per_polyp: 3     # Minimum attestations for hardening
+
+  # Hardening thresholds
+  hardening_threshold: 0.6        # Minimum consensus weight to harden
+  zk_validity_required: true      # ZK proof must verify for hardening
+
+  # Polyp scoring dimension weights (must sum to 1.0)
+  score_weights:
+    zk_validity: 0.30
+    semantic_quality: 0.25
+    novelty: 0.15
+    source_credibility: 0.15
+    embedding_quality: 0.15
+
+  # Anti-Sybil parameters
+  novelty_duplicate_threshold: 0.98  # Cosine sim above this = duplicate
+  max_polyps_per_coral_per_epoch: 64 # Rate limit per coral per epoch
+
+  # Metagraph update frequency
+  metagraph_sync_interval: 100    # Blocks between metagraph snapshots

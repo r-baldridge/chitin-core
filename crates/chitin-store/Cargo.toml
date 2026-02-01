@@ -1,0 +1,21 @@
+[package]
+name = "chitin-store"
+version = "0.1.0"
+edition = "2021"
+description = "RocksDB + IPFS + hardened store + HNSW index + Bloom filters for the Chitin Protocol"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+chitin-core = { path = "../chitin-core" }
+rocksdb = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+bloomfilter = "1"
+async-trait = "0.1"
+
+# TODO: Add these when ready (complex dependency trees)
+# qdrant-client = "1"
+# ipfs-api-backend-hyper = "0.6"

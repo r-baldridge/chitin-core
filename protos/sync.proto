@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package chitin.sync;
+
+// Request current sync status of a node.
+message SyncStatusRequest {
+    // Optional: request sync status for a specific shard.
+    string shard_id = 1;
+}
+
+// Sync status response.
+message SyncStatusResponse {
+    bool   is_synced       = 1;  // Whether the node is fully synced
+    uint64 local_epoch     = 2;  // Latest epoch the node has processed
+    uint64 network_epoch   = 3;  // Latest known epoch on the network
+    uint64 blocks_behind   = 4;  // Number of blocks behind the network
+    uint32 peers_syncing   = 5;  // Number of peers currently syncing from
+    uint64 polyps_synced   = 6;  // Total polyps synced
+    uint64 polyps_pending  = 7;  // Polyps remaining to sync
+    double sync_progress   = 8;  // 0.0 to 1.0 progress indicator
+}
+
+// Request to manually trigger sync with peers.
+message TriggerSyncRequest {
+    // Optional: target specific peer(s) to sync from.
+    repeated string peer_ids = 1;
+    // Optional: sync only a specific shard.
+    string shard_id          = 2;
+    // Optional: sync from a specific epoch.
+    uint64 from_epoch        = 3;
+}
+
+// Response to a trigger sync request.
+message TriggerSyncResponse {
+    bool   accepted    = 1;  // Whether the sync was initiated
+    string sync_id     = 2;  // ID to track this sync operation
+    string error       = 3;  // Error message if not accepted
+}
+
+// Bloom filter exchange for efficient set reconciliation.
+message BloomFilterExchange {
+    bytes  sender_hotkey   = 1;  // Sender's hotkey
+    string shard_id        = 2;  // Which shard this filter covers
+    uint64 epoch_range_start = 3; // Start of the epoch range
+    uint64 epoch_range_end   = 4; // End of the epoch range
+    bytes  bloom_filter    = 5;  // Serialized Bloom filter bytes
+    uint32 num_items       = 6;  // Number of items in the filter
+    double false_positive_rate = 7; // Expected false positive rate
+    bytes  signature       = 8;  // Signed by sender
+}

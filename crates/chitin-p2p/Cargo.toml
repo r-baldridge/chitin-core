@@ -1,0 +1,17 @@
+[package]
+name = "chitin-p2p"
+version = "0.1.0"
+edition = "2021"
+description = "libp2p networking: transport, discovery, gossip, axon, dendrite for the Chitin Protocol"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+chitin-core = { path = "../chitin-core" }
+chitin-store = { path = "../chitin-store" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+async-trait = "0.1"
+
+# TODO: libp2p has a huge dependency tree. Add when ready.
+# libp2p = { version = "0.54", features = ["tcp", "quic", "dns", "noise", "yamux", "gossipsub", "kad", "mdns", "identify", "tokio"] }

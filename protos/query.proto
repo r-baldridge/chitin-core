@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package chitin.query;
+
+import "polyp.proto";
+
+// Agent requests knowledge retrieval from any node.
+message RetrievalRequest {
+    string              query_text    = 1;  // Natural language query
+    chitin.polyp.Vector query_vector  = 2;  // Pre-computed query vector (optional)
+    string              model_id      = 3;  // Which embedding space to search
+    uint32              top_k         = 4;  // Number of results (default 10)
+    double              min_trust     = 5;  // Minimum trust score filter (default 0.0)
+    bool                hardened_only = 6;  // Only return hardened polyps (default true)
+    string              reef_zone     = 7;  // Topic filter (optional)
+}
+
+// Response containing retrieval results.
+message RetrievalResponse {
+    repeated RetrievalResult results        = 1;
+    uint64                   search_time_ms = 2;
+    string                   served_by      = 3;  // Node DID that served the query
+}
+
+// A single retrieval result.
+message RetrievalResult {
+    bytes                polyp_id       = 1;
+    string               cid            = 2;
+    chitin.polyp.Payload payload        = 3;
+    double               similarity     = 4;  // Cosine similarity to query
+    double               trust_score    = 5;  // Composite trust score
+    string               creator_did    = 6;
+    string               state          = 7;  // "Hardened", "Approved", etc.
+    uint64               hardened_epoch = 8;
+}

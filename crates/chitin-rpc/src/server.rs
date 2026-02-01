@@ -1,0 +1,540 @@
+// crates/chitin-rpc/src/server.rs
+//
+// RPC server setup: ChitinRpcServer and RpcConfig.
+//
+// Phase 1: Uses a JSON-RPC-over-gRPC approach. A single tonic unary service
+// accepts JSON-encoded requests with a method field, dispatches to the
+// appropriate handler, and returns JSON-encoded responses.
+//
+// This avoids the need for proto codegen while still using tonic's server
+// infrastructure for transport, streaming, and middleware.
+
+use std::sync::Arc;
+
+use http_body::Body as HttpBody;
+use http_body_util::BodyExt;
+use serde::{Deserialize, Serialize};
+use tonic::transport::Server;
+use tonic::Status;
+
+use chitin_store::{InMemoryVectorIndex, RocksStore};
+
+use crate::handlers;
+use crate::middleware;
+
+// ---------------------------------------------------------------------------
+// RpcConfig
+// ---------------------------------------------------------------------------
+
+/// Configuration for the RPC server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RpcConfig {
+    /// Host to bind to (e.g., "127.0.0.1" or "0.0.0.0").
+    pub host: String,
+    /// Port to listen on.
+    pub port: u16,
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 50051,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC Envelope
+// ---------------------------------------------------------------------------
+
+/// A JSON-RPC-style request envelope.
+/// The client sends a method name and a JSON params payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcRequest {
+    /// The RPC method to invoke (e.g., "polyp/submit", "query/search").
+    pub method: String,
+    /// JSON-encoded parameters for the method.
+    pub params: serde_json::Value,
+}
+
+/// A JSON-RPC-style response envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcResponse {
+    /// Whether the request succeeded.
+    pub success: bool,
+    /// The result data (if success).
+    pub result: Option<serde_json::Value>,
+    /// Error message (if not success).
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// ChitinRpcServer
+// ---------------------------------------------------------------------------
+
+/// The main RPC server for the Chitin Protocol.
+///
+/// Holds Arc references to shared state (store, vector index, etc.)
+/// and exposes a tonic-based gRPC server with JSON-RPC dispatching.
+#[derive(Debug, Clone)]
+pub struct ChitinRpcServer {
+    /// Server configuration.
+    config: RpcConfig,
+    /// RocksDB-backed Polyp store.
+    store: Arc<RocksStore>,
+    /// In-memory vector index for ANN search.
+    index: Arc<InMemoryVectorIndex>,
+    /// Rate limiter (Phase 1: stub).
+    #[allow(dead_code)]
+    rate_limiter: middleware::RateLimiter,
+}
+
+impl ChitinRpcServer {
+    /// Create a new ChitinRpcServer.
+    ///
+    /// # Arguments
+    /// * `config` - Server configuration (host, port).
+    /// * `store` - Shared RocksDB store for Polyp persistence.
+    /// * `index` - Shared in-memory vector index for ANN search.
+    pub fn new(
+        config: RpcConfig,
+        store: Arc<RocksStore>,
+        index: Arc<InMemoryVectorIndex>,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            index,
+            rate_limiter: middleware::RateLimiter::default(),
+        }
+    }
+
+    /// Start the RPC server and listen for requests.
+    ///
+    /// This binds to the configured address and serves requests until
+    /// the process is terminated.
+    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let addr = format!("{}:{}", self.config.host, self.config.port).parse()?;
+
+        tracing::info!("Chitin RPC server starting on {}", addr);
+
+        let service = ChitinServiceImpl {
+            store: self.store.clone(),
+            index: self.index.clone(),
+        };
+
+        Server::builder()
+            .add_service(
+                tonic::service::interceptor::InterceptedService::new(
+                    ChitinJsonRpcServer::new(service),
+                    middleware::logging_interceptor,
+                ),
+            )
+            .serve(addr)
+            .await?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// gRPC Service Definition (manual, no proto codegen)
+// ---------------------------------------------------------------------------
+
+/// The internal service implementation that holds shared state
+/// and dispatches JSON-RPC calls to the appropriate handler.
+#[derive(Debug, Clone)]
+struct ChitinServiceImpl {
+    store: Arc<RocksStore>,
+    index: Arc<InMemoryVectorIndex>,
+}
+
+impl ChitinServiceImpl {
+    /// Dispatch a JSON-RPC request to the appropriate handler based on the method name.
+    async fn dispatch(&self, request: JsonRpcRequest) -> JsonRpcResponse {
+        let result = match request.method.as_str() {
+            // Polyp Management
+            "polyp/submit" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_submit_polyp(&store, r).await }
+                })
+                .await
+            }
+            "polyp/get" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_get_polyp(&store, r).await }
+                })
+                .await
+            }
+            "polyp/list" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_list_polyps(&store, r).await }
+                })
+                .await
+            }
+            "polyp/state" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_get_polyp_state(&store, r).await }
+                })
+                .await
+            }
+            "polyp/provenance" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_get_polyp_provenance(&store, r).await }
+                })
+                .await
+            }
+            "polyp/hardening" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::polyp::handle_get_hardening_receipt(&store, r).await }
+                })
+                .await
+            }
+
+            // Query / Retrieval
+            "query/search" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    let index = self.index.clone();
+                    async move { handlers::query::handle_semantic_search(&store, &index, r).await }
+                })
+                .await
+            }
+            "query/hybrid" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    let index = self.index.clone();
+                    async move { handlers::query::handle_hybrid_search(&store, &index, r).await }
+                })
+                .await
+            }
+            "query/cid" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::query::handle_get_by_cid(&store, r).await }
+                })
+                .await
+            }
+            "query/explain" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move { handlers::query::handle_explain_result(&store, r).await }
+                })
+                .await
+            }
+
+            // Node
+            "node/info" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::node::handle_get_node_info(r).await
+                })
+                .await
+            }
+            "node/health" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::node::handle_get_health(r).await
+                })
+                .await
+            }
+            "node/peers" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::node::handle_get_peers(r).await
+                })
+                .await
+            }
+
+            // Wallet
+            "wallet/create" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::wallet::handle_create_wallet(r).await
+                })
+                .await
+            }
+            "wallet/import" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::wallet::handle_import_wallet(r).await
+                })
+                .await
+            }
+            "wallet/balance" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::wallet::handle_get_balance(r).await
+                })
+                .await
+            }
+            "wallet/transfer" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::wallet::handle_transfer(r).await
+                })
+                .await
+            }
+
+            // Staking
+            "staking/stake" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::staking::handle_stake(r).await
+                })
+                .await
+            }
+            "staking/unstake" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::staking::handle_unstake(r).await
+                })
+                .await
+            }
+            "staking/info" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::staking::handle_get_stake_info(r).await
+                })
+                .await
+            }
+
+            // Metagraph
+            "metagraph/get" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::metagraph::handle_get_metagraph(r).await
+                })
+                .await
+            }
+            "metagraph/node" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::metagraph::handle_get_node_metrics(r).await
+                })
+                .await
+            }
+            "metagraph/weights" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::metagraph::handle_get_weights(r).await
+                })
+                .await
+            }
+            "metagraph/bonds" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::metagraph::handle_get_bonds(r).await
+                })
+                .await
+            }
+
+            // Validation
+            "validation/scores" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::validation::handle_submit_scores(r).await
+                })
+                .await
+            }
+            "validation/epoch" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::validation::handle_get_epoch_status(r).await
+                })
+                .await
+            }
+            "validation/result" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::validation::handle_get_consensus_result(r).await
+                })
+                .await
+            }
+
+            // Sync
+            "sync/status" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::sync::handle_get_sync_status(r).await
+                })
+                .await
+            }
+            "sync/trigger" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::sync::handle_trigger_sync(r).await
+                })
+                .await
+            }
+
+            // Admin
+            "admin/config" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::admin::handle_get_config(r).await
+                })
+                .await
+            }
+            "admin/config/update" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::admin::handle_update_config(r).await
+                })
+                .await
+            }
+            "admin/logs" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::admin::handle_get_logs(r).await
+                })
+                .await
+            }
+
+            _ => Err(format!("Unknown method: {}", request.method)),
+        };
+
+        match result {
+            Ok(value) => JsonRpcResponse {
+                success: true,
+                result: Some(value),
+                error: None,
+            },
+            Err(err) => JsonRpcResponse {
+                success: false,
+                result: None,
+                error: Some(err),
+            },
+        }
+    }
+}
+
+/// Generic dispatch helper: deserialize params into a request type,
+/// call the handler, and serialize the result to JSON.
+async fn dispatch_handler<Req, Resp, F, Fut>(
+    params: serde_json::Value,
+    handler: F,
+) -> Result<serde_json::Value, String>
+where
+    Req: serde::de::DeserializeOwned,
+    Resp: serde::Serialize,
+    F: FnOnce(Req) -> Fut,
+    Fut: std::future::Future<Output = Result<Resp, String>>,
+{
+    let request: Req = serde_json::from_value(params)
+        .map_err(|e| format!("Failed to deserialize request: {}", e))?;
+    let response = handler(request).await?;
+    serde_json::to_value(response).map_err(|e| format!("Failed to serialize response: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Tonic Service Wiring
+// ---------------------------------------------------------------------------
+// We define a single gRPC service with one method: `Call`.
+// The request and response are raw bytes (JSON-encoded JsonRpcRequest/Response).
+// This avoids proto codegen entirely.
+
+/// The tonic service wrapper. Implements the low-level gRPC service
+/// by accepting bytes, deserializing as JSON-RPC, and dispatching.
+#[derive(Debug, Clone)]
+pub struct ChitinJsonRpcServer {
+    inner: ChitinServiceImpl,
+}
+
+impl ChitinJsonRpcServer {
+    fn new(inner: ChitinServiceImpl) -> Self {
+        Self { inner }
+    }
+}
+
+// Implement tonic::codegen::Service manually for our JSON-RPC service.
+// This is the pattern for defining tonic services without proto codegen.
+impl tonic::server::NamedService for ChitinJsonRpcServer {
+    const NAME: &'static str = "chitin.rpc.ChitinService";
+}
+
+impl<B> tower_service::Service<http::Request<B>> for ChitinJsonRpcServer
+where
+    B: HttpBody + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>> + Send,
+    B::Data: Send,
+{
+    type Response = http::Response<tonic::body::BoxBody>;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: http::Request<B>) -> Self::Future {
+        let inner = self.inner.clone();
+
+        Box::pin(async move {
+            // Read the full request body.
+            let body = req.into_body();
+            let body_bytes = match collect_body(body).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!("Failed to read request body: {}", e);
+                    let resp = JsonRpcResponse {
+                        success: false,
+                        result: None,
+                        error: Some(format!("Failed to read request body: {}", e)),
+                    };
+                    let json = serde_json::to_vec(&resp).unwrap_or_default();
+                    return Ok(build_response(json));
+                }
+            };
+
+            // Deserialize the JSON-RPC request.
+            let rpc_request: JsonRpcRequest = match serde_json::from_slice(&body_bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    let resp = JsonRpcResponse {
+                        success: false,
+                        result: None,
+                        error: Some(format!("Invalid JSON-RPC request: {}", e)),
+                    };
+                    let json = serde_json::to_vec(&resp).unwrap_or_default();
+                    return Ok(build_response(json));
+                }
+            };
+
+            // Dispatch to the appropriate handler.
+            let rpc_response = inner.dispatch(rpc_request).await;
+            let json = serde_json::to_vec(&rpc_response).unwrap_or_default();
+            Ok(build_response(json))
+        })
+    }
+}
+
+/// Collect the body of an HTTP request into bytes.
+async fn collect_body<B>(body: B) -> Result<Vec<u8>, String>
+where
+    B: HttpBody + Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    B::Data: Send,
+{
+    let mut collected = Vec::new();
+    let mut body = std::pin::pin!(body);
+
+    loop {
+        match std::future::poll_fn(|cx| HttpBody::poll_frame(body.as_mut(), cx)).await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    use bytes::Buf;
+                    collected.extend_from_slice(data.chunk());
+                }
+            }
+            Some(Err(e)) => return Err(e.into().to_string()),
+            None => break,
+        }
+    }
+
+    Ok(collected)
+}
+
+/// Build an HTTP response with the given JSON body.
+fn build_response(json: Vec<u8>) -> http::Response<tonic::body::BoxBody> {
+    let body = tonic::body::BoxBody::new(
+        http_body_util::Full::new(bytes::Bytes::from(json))
+            .map_err(|e| Status::internal(format!("body error: {}", e))),
+    );
+
+    http::Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap()
+}

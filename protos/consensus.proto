@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package chitin.consensus;
+
+// Tide Node submits epoch scores/weights to the consensus layer.
+message ValidationScoreSubmission {
+    bytes  validator_hotkey             = 1;
+    uint64 epoch                        = 2;
+
+    // Sparse weight vector: (coral_uid, weight) pairs
+    repeated WeightEntry weights        = 3;
+
+    // Per-polyp detailed scores (optional, for auditing)
+    repeated PolypScoreEntry detailed_scores = 4;
+
+    bytes  signature                    = 5;
+}
+
+// A single weight entry in the sparse weight vector.
+message WeightEntry {
+    uint32 coral_uid = 1;
+    double weight    = 2;
+}
+
+// Per-polyp detailed quality scores (for auditing).
+message PolypScoreEntry {
+    bytes  polyp_id           = 1;
+    double zk_validity        = 2;
+    double semantic_quality   = 3;
+    double novelty            = 4;
+    double source_credibility = 5;
+    double embedding_quality  = 6;
+}
+
+// Receipt broadcast after a Polyp is hardened by consensus.
+message HardeningReceipt {
+    bytes              polyp_id     = 1;
+    string             cid          = 2;  // IPFS CID
+    bytes              merkle_root  = 3;  // Epoch merkle root
+    repeated bytes     merkle_proof = 4;  // Proof of inclusion
+    repeated Attestation attestations = 5;
+    uint64             epoch        = 6;
+    string             anchor_tx    = 7;  // On-chain tx hash (optional)
+}
+
+// Validator attestation for a hardened Polyp.
+message Attestation {
+    bytes  validator_hotkey = 1;
+    uint64 epoch            = 2;
+    bytes  polyp_id         = 3;
+    string cid              = 4;
+    bytes  signature        = 5;
+}

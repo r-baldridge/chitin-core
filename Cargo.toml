@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+exclude = [
+    "zk-circuits/embedding-proof",
+]
+members = [
+    "crates/chitin-core",
+    "crates/chitin-store",
+    "crates/chitin-verify",
+    "crates/chitin-p2p",
+    "crates/chitin-sync",
+    "crates/chitin-consensus",
+    "crates/chitin-reputation",
+    "crates/chitin-drift",
+    "crates/chitin-economics",
+    "crates/chitin-rpc",
+    "crates/chitin-daemon",
+    "crates/chitin-cli",
+]

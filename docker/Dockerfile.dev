@@ -1,0 +1,33 @@
+# Development image with tooling
+FROM rust:1.75-bookworm
+
+# Install development tools
+RUN cargo install cargo-watch cargo-nextest cargo-deny cargo-audit && \
+    apt-get update && apt-get install -y \
+    protobuf-compiler \
+    libprotobuf-dev \
+    libssl-dev \
+    pkg-config \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install grpcurl for testing gRPC endpoints
+RUN curl -sSL https://github.com/fullstorydev/grpcurl/releases/download/v1.8.9/grpcurl_1.8.9_linux_x86_64.tar.gz \
+    | tar -xz -C /usr/local/bin
+
+WORKDIR /app
+
+# Volume for source mounting (allows live reloading)
+VOLUME ["/app"]
+
+# gRPC port
+EXPOSE 50051
+# IPFS port
+EXPOSE 4001
+
+ENV RUST_LOG=debug
+ENV RUST_BACKTRACE=1
+
+# Default command: watch for changes and rebuild
+CMD ["cargo", "watch", "-x", "run --bin chitin-daemon"]

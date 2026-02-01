@@ -1,0 +1,31 @@
+# configs/economics.yaml
+token:
+  name: "Chitin"
+  symbol: "CTN"
+  max_supply: 21_000_000
+  decimals: 9                     # 1 CTN = 1_000_000_000 rao
+  block_time_seconds: 12
+
+emission:
+  initial_block_reward: 1.0       # CTN per block
+  halving_interval: 10_512_000    # Blocks (~4 years)
+  treasury_fraction: 0.02         # 2% of emission to treasury
+  validator_fraction: 0.41        # xi: fraction of emission to validators
+
+staking:
+  coral_minimum: 100              # CTN
+  tide_minimum: 1_000             # CTN
+  delegation_minimum: 10          # CTN
+  coral_cooldown_blocks: 7_200    # ~24 hours
+  tide_cooldown_blocks: 21_600    # ~72 hours
+  delegation_cooldown_blocks: 7_200
+  default_commission_rate: 0.18   # 18% delegation commission
+
+slashing:
+  invalid_zk_proof: 1.0           # 100% of stake
+  consensus_deviation: 0.05       # 5% per offense
+  consensus_deviation_sigma: 3.0  # Standard deviations for trigger
+  consensus_deviation_epochs: 3   # Consecutive epochs before slash
+  liveness_failure: 0.01          # 1% per missed epoch
+  liveness_failure_epochs: 3      # Consecutive misses before slash
+  duplicate_submission: 0.10      # 10% of stake

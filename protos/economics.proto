@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package chitin.economics;
+
+// Request to stake CTN to a node.
+message StakeRequest {
+    bytes  coldkey     = 1;  // Staker's coldkey
+    bytes  hotkey      = 2;  // Target node's hotkey
+    uint64 amount_rao  = 3;  // Amount in rao (1 CTN = 10^9 rao)
+    bytes  signature   = 4;  // Signed by coldkey
+}
+
+// Response to a stake request.
+message StakeResponse {
+    bool   success     = 1;
+    string tx_hash     = 2;  // Transaction hash
+    uint64 new_balance = 3;  // Remaining balance after staking
+    uint64 total_stake = 4;  // Total stake on target node
+    string error       = 5;  // Error message if failed
+}
+
+// Request to unstake CTN from a node.
+message UnstakeRequest {
+    bytes  coldkey     = 1;  // Staker's coldkey
+    bytes  hotkey      = 2;  // Target node's hotkey
+    uint64 amount_rao  = 3;  // Amount to unstake in rao
+    bytes  signature   = 4;  // Signed by coldkey
+}
+
+// Response to an unstake request.
+message UnstakeResponse {
+    bool   success            = 1;
+    string tx_hash            = 2;  // Transaction hash
+    uint64 cooldown_blocks    = 3;  // Blocks until funds are available
+    uint64 cooldown_expires_at = 4; // Block number when cooldown ends
+    string error              = 5;  // Error message if failed
+}
+
+// Request to get balance for a coldkey.
+message GetBalanceRequest {
+    bytes coldkey = 1;
+}
+
+// Balance response.
+message GetBalanceResponse {
+    uint64 free_balance    = 1;  // Available balance in rao
+    uint64 staked_balance  = 2;  // Total staked in rao
+    uint64 pending_unstake = 3;  // Amount in cooldown period
+    uint64 total_balance   = 4;  // free + staked + pending
+}
+
+// Request to transfer CTN between coldkeys.
+message TransferRequest {
+    bytes  from_coldkey = 1;
+    bytes  to_coldkey   = 2;
+    uint64 amount_rao   = 3;
+    bytes  signature    = 4;  // Signed by from_coldkey
+}
+
+// Response to a transfer request.
+message TransferResponse {
+    bool   success     = 1;
+    string tx_hash     = 2;
+    uint64 new_balance = 3;  // Sender's remaining balance
+    string error       = 4;  // Error message if failed
+}

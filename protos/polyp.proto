@@ -1,0 +1,121 @@
+syntax = "proto3";
+
+package chitin.polyp;
+
+// The human-readable knowledge content.
+message Payload {
+    // The raw text, code snippet, or structured data.
+    string content = 1;
+    // MIME type of the content (e.g., "text/plain", "text/markdown", "application/json").
+    string content_type = 2;
+    // Optional: language code (e.g., "en", "es").
+    string language = 3;
+}
+
+// A vector embedding with model provenance.
+message Vector {
+    // The raw float vector.
+    repeated float values = 1;
+    // Model identifier (e.g., "bge/bge-small-en-v1.5").
+    string model_id = 2;
+    // Quantization applied (e.g., "float32", "int8", "binary").
+    string quantization = 3;
+    // Normalization applied (e.g., "l2", "none").
+    string normalization = 4;
+    // Output dimensionality.
+    uint32 dimensions = 5;
+}
+
+// ZK proof attesting to correct embedding generation.
+message ZkProof {
+    // Proof system identifier: "SP1Groth16", "Risc0Stark", etc.
+    string proof_type = 1;
+    // Hex-encoded proof bytes.
+    bytes proof_value = 2;
+    // The verification key hash (identifies the circuit).
+    string vk_hash = 3;
+    // Public inputs committed in the proof.
+    ProofPublicInputs public_inputs = 4;
+    // Timestamp of proof generation (Unix millis).
+    uint64 created_at = 5;
+}
+
+// Public inputs committed inside the ZK proof.
+message ProofPublicInputs {
+    // SHA-256 hash of the source text.
+    bytes text_hash = 1;
+    // SHA-256 hash of the resulting vector bytes.
+    bytes vector_hash = 2;
+    // Embedding model identifier.
+    string model_id = 3;
+}
+
+// Full provenance chain for a Polyp.
+message Provenance {
+    // The agent/node that created this Polyp (hotkey).
+    bytes creator_hotkey = 1;
+    // DID of the creator node.
+    string creator_did = 2;
+    // Attribution to the original source material.
+    SourceAttribution source = 3;
+    // Processing pipeline that produced this Polyp.
+    ProcessingPipeline pipeline = 4;
+}
+
+// Attribution to the original source.
+message SourceAttribution {
+    // IPFS CID of the original source document (if available).
+    string source_cid = 1;
+    // URL of the original source (if web-sourced).
+    string source_url = 2;
+    // Human-readable title or description of the source.
+    string title = 3;
+    // License under which the source is available.
+    string license = 4;
+    // Timestamp when the source was accessed (Unix millis).
+    uint64 accessed_at = 5;
+}
+
+// Describes the processing pipeline that produced the Polyp.
+message ProcessingPipeline {
+    // Ordered list of processing steps.
+    repeated PipelineStep steps = 1;
+    // Total wall-clock time for the pipeline (milliseconds).
+    uint64 duration_ms = 2;
+}
+
+// A single step in the processing pipeline.
+message PipelineStep {
+    string name = 1;
+    string version = 2;
+    string params_json = 3;  // JSON-encoded parameters
+}
+
+// A Polyp submission from a Coral Node to the network (gossip broadcast).
+message PolypSubmission {
+    bytes      polyp_id   = 1;   // UUID bytes
+    bytes      hotkey     = 2;   // Coral's hotkey
+    Payload    payload    = 3;   // Text content
+    Vector     vector     = 4;   // Embedding
+    ZkProof    proof      = 5;   // ZK attestation
+    Provenance provenance = 6;   // Source chain
+    bytes      signature  = 7;   // ed25519 over hash(payload+vector+proof)
+    uint64     timestamp  = 8;   // Unix millis
+}
+
+// Tide Node requests Polyps from a Coral Node for evaluation.
+message ValidationQuery {
+    bytes  validator_hotkey = 1;  // Tide Node requesting
+    uint64 epoch            = 2;  // Current epoch
+    uint32 max_polyps       = 3;  // Max polyps to return (default 32)
+    string reef_zone        = 4;  // Topic filter (e.g., "code/python")
+    bytes  signature        = 5;  // Auth signature
+}
+
+// Coral Node responds to a ValidationQuery with a batch of Polyps.
+message ValidationResponse {
+    bytes                    coral_hotkey = 1;
+    uint64                   epoch        = 2;
+    repeated PolypSubmission polyps       = 3;  // Batch of polyps for evaluation
+    bytes                    signature    = 4;
+}

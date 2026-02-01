@@ -1,0 +1,47 @@
+# configs/model_configs.yaml
+models:
+  - id: "openai/text-embedding-3-small"
+    provider: "openai"
+    name: "text-embedding-3-small"
+    dimensions: 1536
+    quantization: "float32"
+    normalization: "l2"
+    weights_hash: "sha256:a1b2c3d4..."
+    max_tokens: 8191
+    zkvm_compatible: true
+    zkvm_target: "sp1"
+    status: "active"
+
+  - id: "bge/bge-small-en-v1.5"
+    provider: "bge"
+    name: "bge-small-en-v1.5"
+    dimensions: 384
+    quantization: "float32"
+    normalization: "l2"
+    weights_hash: "sha256:e5f6g7h8..."
+    max_tokens: 512
+    zkvm_compatible: true
+    zkvm_target: "sp1"
+    status: "active"
+
+  - id: "nomic/nomic-embed-text-v1.5"
+    provider: "nomic"
+    name: "nomic-embed-text-v1.5"
+    dimensions: 768
+    quantization: "float32"
+    normalization: "l2"
+    weights_hash: "sha256:i9j0k1l2..."
+    max_tokens: 8192
+    zkvm_compatible: true
+    zkvm_target: "risc0"
+    status: "active"
+
+# Default model for new Polyps
+default_model: "bge/bge-small-en-v1.5"
+
+# Alignment projections between model spaces
+alignments:
+  - from: "bge/bge-small-en-v1.5"
+    to: "openai/text-embedding-3-small"
+    projection_cid: "bafybeig..."  # IPFS CID of the projection matrix
+    accuracy_loss: 0.03            # Expected recall degradation
