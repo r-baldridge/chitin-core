@@ -54,10 +54,25 @@ pub struct SubmitPolypResponse {
 ///
 /// Builds a full Polyp struct with a deterministic hash-embedding,
 /// persists it to RocksDB, and upserts into the vector index.
+/// Optionally uses a real node identity for provenance and signs the polyp.
 pub async fn handle_submit_polyp(
     store: &Arc<RocksStore>,
     index: &Arc<InMemoryVectorIndex>,
     request: SubmitPolypRequest,
+) -> Result<SubmitPolypResponse, String> {
+    handle_submit_polyp_with_identity(store, index, request, None, None).await
+}
+
+/// Handle a SubmitPolyp request with optional identity and signing key.
+///
+/// When `node_identity` is provided, it is used for provenance instead of
+/// the placeholder. When `signing_key` is provided, the polyp is signed.
+pub async fn handle_submit_polyp_with_identity(
+    store: &Arc<RocksStore>,
+    index: &Arc<InMemoryVectorIndex>,
+    request: SubmitPolypRequest,
+    node_identity: Option<&NodeIdentity>,
+    signing_key: Option<&[u8; 32]>,
 ) -> Result<SubmitPolypResponse, String> {
     let now = Utc::now();
     let polyp_id = Uuid::now_v7();
@@ -84,13 +99,15 @@ pub async fn handle_submit_polyp(
         language: request.language,
     };
 
+    // Use real identity for provenance if available, otherwise placeholder.
+    let creator = node_identity.cloned().unwrap_or(NodeIdentity {
+        coldkey: [0u8; 32],
+        hotkey: [0u8; 32],
+        did: "did:chitin:local".to_string(),
+        node_type: NodeType::Coral,
+    });
     let provenance = Provenance {
-        creator: NodeIdentity {
-            coldkey: [0u8; 32],
-            hotkey: [0u8; 32],
-            did: "did:chitin:local".to_string(),
-            node_type: NodeType::Coral,
-        },
+        creator,
         source: SourceAttribution {
             source_cid: None,
             source_url: request.source_url,
@@ -131,7 +148,7 @@ pub async fn handle_submit_polyp(
         created_at: now,
     };
 
-    let polyp = Polyp {
+    let mut polyp = Polyp {
         id: polyp_id,
         state: PolypState::Draft,
         subject,
@@ -140,7 +157,17 @@ pub async fn handle_submit_polyp(
         hardening: None,
         created_at: now,
         updated_at: now,
+        signature: None,
     };
+
+    // Sign the polyp if a signing key is available.
+    if let Some(key) = signing_key {
+        if let Err(e) = polyp.sign(key) {
+            tracing::warn!("Failed to sign polyp {}: {}", polyp_id, e);
+        } else {
+            tracing::debug!("Signed polyp {} with hotkey", polyp_id);
+        }
+    }
 
     // Persist to RocksDB.
     store

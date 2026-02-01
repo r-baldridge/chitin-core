@@ -22,6 +22,7 @@ use coral::CoralNode;
 use state::{NodeState, NodeStateMachine};
 use tide::TideNode;
 
+use chitin_core::identity::{NodeIdentity, NodeType};
 use chitin_rpc::{ChitinRpcServer, RpcConfig};
 use chitin_store::InMemoryVectorIndex;
 use peers::PeerRegistry;
@@ -81,6 +82,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     tracing::info!("P2P port: {}", daemon_config.p2p_port);
 
+    // ---------------------------------------------------------------
+    // Phase 2: Load cryptographic identity from key files.
+    // ---------------------------------------------------------------
+    let (node_identity, signing_key) = load_node_identity(&daemon_config);
+
+    if node_identity.is_placeholder() {
+        tracing::warn!(
+            "Running with placeholder identity — no key files found. \
+             Generate keys with `chitin init`."
+        );
+    } else {
+        tracing::info!("Node DID: {}", node_identity.did);
+    }
+
     // Initialize the node state machine.
     let mut state_machine = NodeStateMachine::new();
     state_machine.transition(NodeState::Syncing)?;
@@ -89,7 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start the appropriate node based on the configured type.
     match daemon_config.node_type.as_str() {
         "coral" => {
-            let node = CoralNode::new(&daemon_config)?;
+            let node = CoralNode::new(&daemon_config)?
+                .with_identity(node_identity.clone(), signing_key);
             let store = node.store();
             let index = Arc::new(InMemoryVectorIndex::new());
 
@@ -98,7 +114,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 port: daemon_config.rpc_port,
             };
             let mut rpc_server = ChitinRpcServer::new(rpc_config, store.clone(), index.clone())
-                .with_peer_info(daemon_config.peers.clone());
+                .with_peer_info(daemon_config.peers.clone())
+                .with_identity(node_identity.clone(), signing_key)
+                .with_self_url(daemon_config.self_url.clone());
 
             // Wire up peer networking if peers are configured.
             if !daemon_config.peers.is_empty() {
@@ -111,10 +129,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     daemon_config.peers.len()
                 );
 
-                // Set up gossip callback for polyp broadcast.
+                // Set up gossip callback for polyp broadcast with real DID.
                 let gossip_registry = registry.clone();
+                let gossip_did = if !node_identity.is_placeholder() {
+                    Some(node_identity.did.clone())
+                } else {
+                    None
+                };
                 rpc_server = rpc_server.with_gossip_callback(Arc::new(move |polyp| {
-                    gossip::broadcast_polyp(gossip_registry.clone(), polyp, None);
+                    gossip::broadcast_polyp(gossip_registry.clone(), polyp, gossip_did.clone());
                 }));
 
                 // Spawn announce to all peers.
@@ -147,7 +170,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "hybrid" => {
             tracing::info!("Running in Hybrid mode (Coral + Tide)");
-            let coral = CoralNode::new(&daemon_config)?;
+            let coral = CoralNode::new(&daemon_config)?
+                .with_identity(node_identity.clone(), signing_key);
             let store = coral.store();
             let index = Arc::new(InMemoryVectorIndex::new());
 
@@ -156,7 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 port: daemon_config.rpc_port,
             };
             let mut rpc_server = ChitinRpcServer::new(rpc_config, store.clone(), index.clone())
-                .with_peer_info(daemon_config.peers.clone());
+                .with_peer_info(daemon_config.peers.clone())
+                .with_identity(node_identity.clone(), signing_key)
+                .with_self_url(daemon_config.self_url.clone());
 
             // Wire up peer networking if peers are configured.
             if !daemon_config.peers.is_empty() {
@@ -169,10 +195,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     daemon_config.peers.len()
                 );
 
-                // Set up gossip callback for polyp broadcast.
+                // Set up gossip callback for polyp broadcast with real DID.
                 let gossip_registry = registry.clone();
+                let gossip_did = if !node_identity.is_placeholder() {
+                    Some(node_identity.did.clone())
+                } else {
+                    None
+                };
                 rpc_server = rpc_server.with_gossip_callback(Arc::new(move |polyp| {
-                    gossip::broadcast_polyp(gossip_registry.clone(), polyp, None);
+                    gossip::broadcast_polyp(gossip_registry.clone(), polyp, gossip_did.clone());
                 }));
 
                 // Spawn announce to all peers.
@@ -223,4 +254,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Chitin daemon shut down gracefully");
 
     Ok(())
+}
+
+/// Load the node identity from key files on disk.
+///
+/// Reads the hotkey secret and coldkey public key from hex-encoded files,
+/// derives the hotkey public key from the secret, and constructs a
+/// `NodeIdentity`. Returns a placeholder identity if the files are not found.
+fn load_node_identity(config: &DaemonConfig) -> (NodeIdentity, Option<[u8; 32]>) {
+    let hotkey_path = expand_tilde(&config.hotkey_path);
+    let coldkey_pub_path = expand_tilde(&config.coldkey_pub_path);
+
+    let hotkey_secret = match std::fs::read_to_string(&hotkey_path) {
+        Ok(hex_str) => match hex_decode(hex_str.trim()) {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            }
+            _ => {
+                tracing::warn!("Invalid hotkey secret at {}", hotkey_path);
+                None
+            }
+        },
+        Err(_) => {
+            tracing::debug!("Hotkey secret not found at {}", hotkey_path);
+            None
+        }
+    };
+
+    let coldkey_pub = match std::fs::read_to_string(&coldkey_pub_path) {
+        Ok(hex_str) => match hex_decode(hex_str.trim()) {
+            Some(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            }
+            _ => {
+                tracing::warn!("Invalid coldkey public key at {}", coldkey_pub_path);
+                None
+            }
+        },
+        Err(_) => {
+            tracing::debug!("Coldkey public key not found at {}", coldkey_pub_path);
+            None
+        }
+    };
+
+    match (hotkey_secret, coldkey_pub) {
+        (Some(secret), Some(coldkey)) => {
+            // Derive hotkey public key from the secret.
+            let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret);
+            let hotkey_pub = signing_key.verifying_key().to_bytes();
+
+            // Determine node type from config.
+            let node_type = match config.node_type.as_str() {
+                "coral" => NodeType::Coral,
+                "tide" => NodeType::Tide,
+                _ => NodeType::Hybrid,
+            };
+
+            let identity = NodeIdentity::from_keypairs(hotkey_pub, coldkey, node_type);
+            (identity, Some(secret))
+        }
+        _ => {
+            // Placeholder identity when keys are not available.
+            let identity = NodeIdentity {
+                coldkey: [0u8; 32],
+                hotkey: [0u8; 32],
+                did: "did:chitin:local".to_string(),
+                node_type: NodeType::Hybrid,
+            };
+            (identity, None)
+        }
+    }
+}
+
+/// Expand `~` at the start of a path to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Decode a hex string into bytes. Returns None if the string is invalid hex.
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
 }

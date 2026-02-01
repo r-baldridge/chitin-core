@@ -84,6 +84,32 @@ async fn sync_once(
         for polyp_id in missing {
             match fetch_remote_polyp(client, peer_url, polyp_id).await {
                 Ok(Some(polyp)) => {
+                    // Phase 2: Verify signature if present (soft enforcement).
+                    if polyp.signature.is_some() {
+                        let creator_hotkey = &polyp.subject.provenance.creator.hotkey;
+                        match polyp.verify_signature(creator_hotkey) {
+                            Ok(true) => {
+                                tracing::debug!(
+                                    "Sync: polyp {} signature verified",
+                                    polyp_id
+                                );
+                            }
+                            Ok(false) => {
+                                tracing::warn!(
+                                    "Sync: polyp {} has INVALID signature (soft enforcement, accepting anyway)",
+                                    polyp_id
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Sync: polyp {} signature verification error: {} (accepting anyway)",
+                                    polyp_id,
+                                    e
+                                );
+                            }
+                        }
+                    }
+
                     let values = polyp.subject.vector.values.clone();
 
                     if let Err(e) = store.save_polyp(&polyp).await {

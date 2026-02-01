@@ -46,6 +46,14 @@ pub struct DaemonConfig {
     /// Used in peer announcements so other nodes know how to reach us.
     #[serde(default)]
     pub self_url: Option<String>,
+
+    /// Path to the hotkey secret file (hex-encoded ed25519 signing key).
+    #[serde(default = "default_hotkey_path")]
+    pub hotkey_path: String,
+
+    /// Path to the coldkey public key file (hex-encoded ed25519 public key).
+    #[serde(default = "default_coldkey_pub_path")]
+    pub coldkey_pub_path: String,
 }
 
 fn default_node_type() -> String {
@@ -76,6 +84,14 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_hotkey_path() -> String {
+    "~/.chitin/keys/hotkey.secret".to_string()
+}
+
+fn default_coldkey_pub_path() -> String {
+    "~/.chitin/keys/coldkey.pub".to_string()
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -88,6 +104,8 @@ impl Default for DaemonConfig {
             log_level: default_log_level(),
             peers: Vec::new(),
             self_url: None,
+            hotkey_path: default_hotkey_path(),
+            coldkey_pub_path: default_coldkey_pub_path(),
         }
     }
 }

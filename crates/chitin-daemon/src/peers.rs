@@ -25,6 +25,8 @@ pub struct PeerState {
 pub struct PeerRegistry {
     /// This node's public URL, used in announcements.
     pub self_url: Option<String>,
+    /// This node's DID, included in announce messages.
+    pub self_did: Option<String>,
     /// Configured peer URLs (from config).
     configured_peers: Vec<String>,
     /// Live peer state, updated on successful/failed communication.
@@ -69,6 +71,7 @@ impl PeerRegistry {
 
         Self {
             self_url,
+            self_did: None,
             configured_peers,
             peer_state: Arc::new(RwLock::new(state_map)),
             client,
@@ -109,6 +112,33 @@ impl PeerRegistry {
         state.values().cloned().collect()
     }
 
+    /// Add a dynamically discovered peer if its URL is not already known.
+    ///
+    /// Returns `true` if the peer was newly added, `false` if it already existed.
+    pub async fn add_discovered_peer(&self, url: String, did: Option<String>) -> bool {
+        let mut state = self.peer_state.write().await;
+        if state.contains_key(&url) {
+            // Update DID if we got new info.
+            if let (Some(peer), Some(new_did)) = (state.get_mut(&url), &did) {
+                if peer.node_id.is_none() {
+                    peer.node_id = Some(new_did.clone());
+                }
+            }
+            return false;
+        }
+
+        tracing::info!("Discovered new peer: {} (did={:?})", url, did);
+        state.insert(
+            url.clone(),
+            PeerState {
+                url,
+                node_id: did,
+                alive: true,
+            },
+        );
+        true
+    }
+
     /// Mark a peer as alive or dead after a communication attempt.
     pub async fn mark_peer(&self, url: &str, alive: bool, node_id: Option<String>) {
         let mut state = self.peer_state.write().await;
@@ -126,7 +156,7 @@ impl PeerRegistry {
         let request_body = serde_json::json!({
             "method": "peer/announce",
             "params": {
-                "node_id": null,
+                "node_id": self.self_did,
                 "url": self.self_url,
             }
         });
