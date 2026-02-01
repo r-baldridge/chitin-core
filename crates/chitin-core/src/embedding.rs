@@ -15,6 +15,35 @@ pub struct EmbeddingModelId {
     pub dimensions: u32,
 }
 
+/// Deterministic pseudo-embedding: hash text + dimension index to produce a
+/// reproducible float vector, then L2-normalize. Identical text always yields
+/// an identical vector (cosine similarity ~1.0). No ML model required.
+pub fn hash_embedding(text: &str, dimensions: usize) -> Vec<f32> {
+    use sha2::{Sha256, Digest};
+
+    let mut raw = Vec::with_capacity(dimensions);
+    for i in 0..dimensions {
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        hasher.update(i.to_le_bytes());
+        let hash = hasher.finalize();
+        // Interpret first 4 bytes as u32, map to [-1, 1]
+        let bits = u32::from_le_bytes([hash[0], hash[1], hash[2], hash[3]]);
+        let val = (bits as f64 / u32::MAX as f64) * 2.0 - 1.0;
+        raw.push(val as f32);
+    }
+
+    // L2-normalize
+    let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in raw.iter_mut() {
+            *v /= norm;
+        }
+    }
+
+    raw
+}
+
 /// A vector embedding with full model provenance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorEmbedding {

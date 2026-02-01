@@ -1,0 +1,29 @@
+# Minimal compose for a single Chitin node running in Docker.
+# Useful for Windows hosts (Docker Desktop) or any machine where a native
+# build isn't practical. No Qdrant/IPFS — only chitin-daemon.
+#
+# Usage:
+#   1. Copy your node config:  cp configs/trial/node-<label>.toml docker/node-config.toml
+#   2. docker compose -f docker-compose.trial.yml up -d
+#
+# The container reaches peers via the host's network stack.
+# Other nodes reach this container via the host's IP + port 50051.
+
+services:
+  chitin-daemon:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./node-config.toml:/etc/chitin/config.toml:ro
+      - chitin-data:/data
+    environment:
+      - RUST_LOG=info
+    command: ["--config", "/etc/chitin/config.toml"]
+    restart: unless-stopped
+
+volumes:
+  chitin-data:
+    driver: local

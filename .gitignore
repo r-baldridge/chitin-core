@@ -4,3 +4,8 @@
 *.swo
 .DS_Store
 .env
+
+# Fleet deployment — user-specific config and generated node configs
+configs/fleet.conf
+configs/trial/
+docker/node-config.toml

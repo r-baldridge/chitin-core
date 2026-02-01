@@ -10,6 +10,7 @@ pub mod handlers;
 pub mod middleware;
 pub mod server;
 
-// Re-export the main server type for ergonomic access.
+// Re-export the main server types for ergonomic access.
 pub use server::ChitinRpcServer;
+pub use server::GossipCallback;
 pub use server::RpcConfig;

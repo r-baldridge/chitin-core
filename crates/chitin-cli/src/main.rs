@@ -7,6 +7,7 @@
 
 mod commands;
 mod output;
+pub mod rpc_client;
 
 use clap::{Parser, Subcommand};
 use commands::polyp::PolypCmd;
@@ -65,10 +66,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match &cli.command {
         Commands::Init => commands::init::run().await?,
         Commands::Wallet(cmd) => commands::wallet::run(cmd).await?,
-        Commands::Polyp(cmd) => commands::polyp::run(cmd).await?,
-        Commands::Query(cmd) => commands::query::run(cmd).await?,
+        Commands::Polyp(cmd) => commands::polyp::run(cmd, &cli.rpc).await?,
+        Commands::Query(cmd) => commands::query::run(cmd, &cli.rpc).await?,
         Commands::Stake(cmd) => commands::stake::run(cmd).await?,
-        Commands::Status => commands::status::run().await?,
+        Commands::Status => commands::status::run(&cli.rpc).await?,
         Commands::Metagraph => commands::metagraph::run().await?,
     }
 

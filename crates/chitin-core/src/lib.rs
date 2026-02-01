@@ -23,7 +23,7 @@ pub mod traits;
 pub use polyp::{Payload, Polyp, PolypState, PolypSubject, ProofPublicInputs, ZkProof};
 
 // Embedding types
-pub use embedding::{EmbeddingModelId, VectorEmbedding};
+pub use embedding::{hash_embedding, EmbeddingModelId, VectorEmbedding};
 
 // Provenance types
 pub use provenance::{PipelineStep, ProcessingPipeline, Provenance, SourceAttribution};

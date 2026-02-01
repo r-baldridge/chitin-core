@@ -1,0 +1,26 @@
+# Chitin Protocol — Trial Node Configuration
+#
+# Template for distributed trial deployment (5-7 cloud VMs).
+# Copy this file and edit the REPLACE_WITH_* values for each node.
+
+node_type = "coral"
+data_dir = "~/.chitin/data"
+rpc_host = "0.0.0.0"
+rpc_port = 50051
+p2p_port = 4001
+ipfs_api_url = "http://127.0.0.1:5001"
+log_level = "info"
+
+# This node's publicly reachable URL.
+self_url = "http://REPLACE_WITH_PUBLIC_IP:50051"
+
+# All other trial node URLs (exclude this node's own URL).
+peers = [
+    "http://REPLACE_WITH_NODE1_IP:50051",
+    "http://REPLACE_WITH_NODE2_IP:50051",
+    "http://REPLACE_WITH_NODE3_IP:50051",
+    "http://REPLACE_WITH_NODE4_IP:50051",
+    "http://REPLACE_WITH_NODE5_IP:50051",
+    # "http://REPLACE_WITH_NODE6_IP:50051",
+    # "http://REPLACE_WITH_NODE7_IP:50051",
+]

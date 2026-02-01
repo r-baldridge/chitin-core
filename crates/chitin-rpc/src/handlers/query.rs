@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use chitin_core::hash_embedding;
 use chitin_core::traits::{PolypStore, VectorIndex};
 use chitin_store::{InMemoryVectorIndex, RocksStore};
 
@@ -71,15 +72,15 @@ pub async fn handle_semantic_search(
 ) -> Result<SemanticSearchResponse, String> {
     let start = std::time::Instant::now();
 
-    // We need a query vector. If only text was provided, Phase 2 would embed it.
+    // Use provided vector or generate deterministic hash embedding from query text.
     let query_vector = match request.query_vector {
         Some(v) => v,
-        None => {
-            return Err(
-                "Phase 1: query_vector is required. Text-to-vector embedding not yet implemented."
-                    .to_string(),
-            );
-        }
+        None => match &request.query_text {
+            Some(text) => hash_embedding(text, 384),
+            None => {
+                return Err("Either query_vector or query_text must be provided".to_string());
+            }
+        },
     };
 
     let top_k = request.top_k.unwrap_or(10) as usize;

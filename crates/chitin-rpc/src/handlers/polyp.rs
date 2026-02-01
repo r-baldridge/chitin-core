@@ -5,12 +5,18 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use chitin_core::polyp::{Polyp, PolypState};
-use chitin_core::traits::PolypStore;
-use chitin_store::RocksStore;
+use chitin_core::traits::{PolypStore, VectorIndex};
+use chitin_core::{
+    hash_embedding, EmbeddingModelId, NodeIdentity, NodeType, Payload, PolypSubject,
+    PipelineStep, ProcessingPipeline, Provenance, ProofPublicInputs, SourceAttribution,
+    VectorEmbedding, ZkProof,
+};
+use chitin_store::{InMemoryVectorIndex, RocksStore};
 
 // ---------------------------------------------------------------------------
 // SubmitPolyp
@@ -46,20 +52,112 @@ pub struct SubmitPolypResponse {
 
 /// Handle a SubmitPolyp request.
 ///
-/// Phase 1: Creates a Draft Polyp in the local store. In Phase 2+, this
-/// will also trigger ZK proof generation and P2P gossip broadcast.
+/// Builds a full Polyp struct with a deterministic hash-embedding,
+/// persists it to RocksDB, and upserts into the vector index.
 pub async fn handle_submit_polyp(
-    _store: &Arc<RocksStore>,
-    _request: SubmitPolypRequest,
+    store: &Arc<RocksStore>,
+    index: &Arc<InMemoryVectorIndex>,
+    request: SubmitPolypRequest,
 ) -> Result<SubmitPolypResponse, String> {
-    // Phase 1: Create a placeholder Polyp ID.
-    // Full implementation will assemble the Polyp struct, generate proofs, etc.
+    let now = Utc::now();
     let polyp_id = Uuid::now_v7();
+
+    // Generate embedding: use caller-provided vector or deterministic hash embedding.
+    let dimensions = 384usize;
+    let values = request.vector.unwrap_or_else(|| hash_embedding(&request.content, dimensions));
+
+    let embedding = VectorEmbedding {
+        values: values.clone(),
+        model_id: EmbeddingModelId {
+            provider: "chitin".to_string(),
+            name: "hash-embedding-v1".to_string(),
+            weights_hash: [0u8; 32],
+            dimensions: dimensions as u32,
+        },
+        quantization: "float32".to_string(),
+        normalization: "l2".to_string(),
+    };
+
+    let payload = Payload {
+        content: request.content,
+        content_type: request.content_type,
+        language: request.language,
+    };
+
+    let provenance = Provenance {
+        creator: NodeIdentity {
+            coldkey: [0u8; 32],
+            hotkey: [0u8; 32],
+            did: "did:chitin:local".to_string(),
+            node_type: NodeType::Coral,
+        },
+        source: SourceAttribution {
+            source_cid: None,
+            source_url: request.source_url,
+            title: request.source_title,
+            license: None,
+            accessed_at: now,
+        },
+        pipeline: ProcessingPipeline {
+            steps: vec![PipelineStep {
+                name: "rpc-submit".to_string(),
+                version: "0.1.0".to_string(),
+                params: serde_json::json!({}),
+            }],
+            duration_ms: 0,
+        },
+    };
+
+    let subject = PolypSubject {
+        payload,
+        vector: embedding,
+        provenance,
+    };
+
+    let proof = ZkProof {
+        proof_type: "placeholder".to_string(),
+        proof_value: "0x00".to_string(),
+        vk_hash: "0x00".to_string(),
+        public_inputs: ProofPublicInputs {
+            text_hash: [0u8; 32],
+            vector_hash: [0u8; 32],
+            model_id: EmbeddingModelId {
+                provider: "chitin".to_string(),
+                name: "hash-embedding-v1".to_string(),
+                weights_hash: [0u8; 32],
+                dimensions: dimensions as u32,
+            },
+        },
+        created_at: now,
+    };
+
+    let polyp = Polyp {
+        id: polyp_id,
+        state: PolypState::Draft,
+        subject,
+        proof,
+        consensus: None,
+        hardening: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    // Persist to RocksDB.
+    store
+        .save_polyp(&polyp)
+        .await
+        .map_err(|e| format!("Failed to save polyp: {}", e))?;
+
+    // Upsert into vector index for search.
+    index
+        .upsert(polyp_id, &values)
+        .await
+        .map_err(|e| format!("Failed to index polyp: {}", e))?;
 
     Ok(SubmitPolypResponse {
         polyp_id,
         state: "Draft".to_string(),
-        message: "Polyp submitted successfully (Phase 1: local draft only)".to_string(),
+        message: "Polyp submitted and indexed successfully".to_string(),
     })
 }
 

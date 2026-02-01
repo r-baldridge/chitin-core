@@ -1,0 +1,33 @@
+# Chitin Fleet Configuration
+#
+# Copy this file to fleet.conf and fill in your real IPs:
+#   cp configs/fleet.conf.example configs/fleet.conf
+#
+# Format: LABEL  NODE_IP  SSH_TARGET  ARCH
+#
+# LABEL: A short name for this node (used in config filenames).
+#
+# NODE_IP: The IP address peers use to reach this node.
+#   Tailscale, WireGuard, LAN, or public IPs all work.
+#
+# SSH_TARGET values:
+#   user@ip   — SSH-accessible Linux node (auto-deploy via scp)
+#   local     — Local machine (manual build + start)
+#   docker    — Docker node (manual docker compose up)
+#
+# ARCH values:
+#   x86_64-linux    — Intel/AMD Linux
+#   aarch64-linux   — ARM64 Linux (Jetson, Raspberry Pi, etc.)
+#   aarch64-darwin  — ARM64 macOS (Apple Silicon)
+#   x86_64-docker   — x86_64 Linux via Docker container
+#
+# Example 7-node heterogeneous fleet:
+
+# Label       Node-IP         SSH-User@Host                         Arch
+NODE1         10.0.0.1        user@10.0.0.1                         x86_64-linux
+NODE2         10.0.0.2        user@10.0.0.2                         aarch64-linux
+NODE3         10.0.0.3        user@10.0.0.3                         aarch64-linux
+NODE4         10.0.0.4        user@10.0.0.4                         aarch64-linux
+NODE5         10.0.0.5        user@10.0.0.5                         aarch64-linux
+NODE6         10.0.0.6        local                                 aarch64-darwin
+NODE7         10.0.0.7        docker                                x86_64-docker

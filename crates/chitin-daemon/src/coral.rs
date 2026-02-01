@@ -36,6 +36,11 @@ impl CoralNode {
         })
     }
 
+    /// Get a reference to the underlying RocksStore.
+    pub fn store(&self) -> Arc<RocksStore> {
+        self.store.clone()
+    }
+
     /// Start the Coral Node event loop.
     ///
     /// Phase 1: Logs startup and runs a sleep loop until shutdown signal.

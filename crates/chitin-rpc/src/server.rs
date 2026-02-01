@@ -22,6 +22,12 @@ use chitin_store::{InMemoryVectorIndex, RocksStore};
 use crate::handlers;
 use crate::middleware;
 
+/// Callback type for broadcasting a polyp to peers after creation.
+/// The daemon provides this closure to wire gossip into the RPC layer
+/// without the RPC crate depending on the daemon's PeerRegistry.
+pub type GossipCallback =
+    Arc<dyn Fn(chitin_core::polyp::Polyp) + Send + Sync>;
+
 // ---------------------------------------------------------------------------
 // RpcConfig
 // ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ pub struct JsonRpcResponse {
 ///
 /// Holds Arc references to shared state (store, vector index, etc.)
 /// and exposes a tonic-based gRPC server with JSON-RPC dispatching.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChitinRpcServer {
     /// Server configuration.
     config: RpcConfig,
@@ -88,6 +94,21 @@ pub struct ChitinRpcServer {
     /// Rate limiter (Phase 1: stub).
     #[allow(dead_code)]
     rate_limiter: middleware::RateLimiter,
+    /// Optional callback to broadcast a newly created polyp to peers.
+    gossip_callback: Option<GossipCallback>,
+    /// Number of configured peers.
+    peer_count: usize,
+    /// Configured peer URLs.
+    peer_urls: Vec<String>,
+}
+
+impl std::fmt::Debug for ChitinRpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChitinRpcServer")
+            .field("config", &self.config)
+            .field("gossip_enabled", &self.gossip_callback.is_some())
+            .finish()
+    }
 }
 
 impl ChitinRpcServer {
@@ -107,7 +128,23 @@ impl ChitinRpcServer {
             store,
             index,
             rate_limiter: middleware::RateLimiter::default(),
+            gossip_callback: None,
+            peer_count: 0,
+            peer_urls: Vec::new(),
         }
+    }
+
+    /// Set the gossip callback for broadcasting polyps to peers.
+    pub fn with_gossip_callback(mut self, callback: GossipCallback) -> Self {
+        self.gossip_callback = Some(callback);
+        self
+    }
+
+    /// Set peer information for health/peers endpoints.
+    pub fn with_peer_info(mut self, peer_urls: Vec<String>) -> Self {
+        self.peer_count = peer_urls.len();
+        self.peer_urls = peer_urls;
+        self
     }
 
     /// Start the RPC server and listen for requests.
@@ -122,9 +159,13 @@ impl ChitinRpcServer {
         let service = ChitinServiceImpl {
             store: self.store.clone(),
             index: self.index.clone(),
+            gossip_callback: self.gossip_callback.clone(),
+            peer_count: self.peer_count,
+            peer_urls: self.peer_urls.clone(),
         };
 
         Server::builder()
+            .accept_http1(true)
             .add_service(
                 tonic::service::interceptor::InterceptedService::new(
                     ChitinJsonRpcServer::new(service),
@@ -144,10 +185,15 @@ impl ChitinRpcServer {
 
 /// The internal service implementation that holds shared state
 /// and dispatches JSON-RPC calls to the appropriate handler.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ChitinServiceImpl {
     store: Arc<RocksStore>,
     index: Arc<InMemoryVectorIndex>,
+    gossip_callback: Option<GossipCallback>,
+    /// Number of configured peers (for health endpoint).
+    peer_count: usize,
+    /// Configured peer URLs (for peers endpoint).
+    peer_urls: Vec<String>,
 }
 
 impl ChitinServiceImpl {
@@ -156,11 +202,34 @@ impl ChitinServiceImpl {
         let result = match request.method.as_str() {
             // Polyp Management
             "polyp/submit" => {
-                dispatch_handler(request.params, |r| {
-                    let store = self.store.clone();
-                    async move { handlers::polyp::handle_submit_polyp(&store, r).await }
-                })
-                .await
+                let store = self.store.clone();
+                let index = self.index.clone();
+                let gossip_cb = self.gossip_callback.clone();
+                let req: Result<handlers::polyp::SubmitPolypRequest, _> =
+                    serde_json::from_value(request.params);
+                match req {
+                    Ok(r) => {
+                        match handlers::polyp::handle_submit_polyp(&store, &index, r).await {
+                            Ok(resp) => {
+                                // Trigger gossip broadcast if callback is set.
+                                if let Some(cb) = gossip_cb {
+                                    if let Ok(Some(polyp)) = chitin_core::traits::PolypStore::get_polyp(
+                                        store.as_ref(),
+                                        &resp.polyp_id,
+                                    )
+                                    .await
+                                    {
+                                        cb(polyp);
+                                    }
+                                }
+                                serde_json::to_value(resp)
+                                    .map_err(|e| format!("Failed to serialize response: {}", e))
+                            }
+                            Err(e) => Err(e),
+                        }
+                    }
+                    Err(e) => Err(format!("Failed to deserialize request: {}", e)),
+                }
             }
             "polyp/get" => {
                 dispatch_handler(request.params, |r| {
@@ -238,14 +307,25 @@ impl ChitinServiceImpl {
                 .await
             }
             "node/health" => {
+                let peer_count = self.peer_count;
                 dispatch_handler(request.params, |r| async move {
-                    handlers::node::handle_get_health(r).await
+                    handlers::node::handle_get_health(r, peer_count).await
                 })
                 .await
             }
             "node/peers" => {
+                let peer_urls = self.peer_urls.clone();
                 dispatch_handler(request.params, |r| async move {
-                    handlers::node::handle_get_peers(r).await
+                    let peer_data: Vec<handlers::node::PeerInfo> = peer_urls
+                        .into_iter()
+                        .map(|url| handlers::node::PeerInfo {
+                            peer_id: url.clone(),
+                            address: url,
+                            node_type: None,
+                            latency_ms: None,
+                        })
+                        .collect();
+                    handlers::node::handle_get_peers(r, peer_data).await
                 })
                 .await
             }
@@ -376,6 +456,33 @@ impl ChitinServiceImpl {
                 .await
             }
 
+            // Peer Relay
+            "peer/announce" => {
+                dispatch_handler(request.params, |r| async move {
+                    handlers::peer::handle_announce(r).await
+                })
+                .await
+            }
+            "peer/receive_polyp" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    let index = self.index.clone();
+                    async move {
+                        handlers::peer::handle_receive_polyp(&store, &index, r).await
+                    }
+                })
+                .await
+            }
+            "peer/list_polyp_ids" => {
+                dispatch_handler(request.params, |r| {
+                    let store = self.store.clone();
+                    async move {
+                        handlers::peer::handle_list_polyp_ids(&store, r).await
+                    }
+                })
+                .await
+            }
+
             _ => Err(format!("Unknown method: {}", request.method)),
         };
 
@@ -421,9 +528,15 @@ where
 
 /// The tonic service wrapper. Implements the low-level gRPC service
 /// by accepting bytes, deserializing as JSON-RPC, and dispatching.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChitinJsonRpcServer {
     inner: ChitinServiceImpl,
+}
+
+impl std::fmt::Debug for ChitinJsonRpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChitinJsonRpcServer").finish()
+    }
 }
 
 impl ChitinJsonRpcServer {

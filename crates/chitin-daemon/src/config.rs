@@ -36,6 +36,16 @@ pub struct DaemonConfig {
     /// Log level: "trace", "debug", "info", "warn", "error".
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Peer URLs for HTTP relay (e.g., ["http://10.0.0.2:50051"]).
+    /// When empty (default), all peer networking is disabled.
+    #[serde(default)]
+    pub peers: Vec<String>,
+
+    /// This node's publicly reachable URL (e.g., "http://10.0.0.1:50051").
+    /// Used in peer announcements so other nodes know how to reach us.
+    #[serde(default)]
+    pub self_url: Option<String>,
 }
 
 fn default_node_type() -> String {
@@ -76,6 +86,8 @@ impl Default for DaemonConfig {
             p2p_port: default_p2p_port(),
             ipfs_api_url: default_ipfs_api_url(),
             log_level: default_log_level(),
+            peers: Vec::new(),
+            self_url: None,
         }
     }
 }

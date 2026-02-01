@@ -1,0 +1,27 @@
+[Unit]
+Description=Chitin Protocol Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chitin
+Group=chitin
+ExecStart=/usr/local/bin/chitin-daemon --config %h/.chitin/config.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chitin-daemon
+
+# Security hardening
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=%h/.chitin
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

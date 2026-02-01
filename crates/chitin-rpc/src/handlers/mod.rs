@@ -7,6 +7,7 @@
 pub mod admin;
 pub mod metagraph;
 pub mod node;
+pub mod peer;
 pub mod polyp;
 pub mod query;
 pub mod staking;

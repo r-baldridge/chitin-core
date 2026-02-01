@@ -1,10 +1,10 @@
 // crates/chitin-cli/src/commands/query.rs
 //
 // `chitin query <text>` — semantic search against the Reef.
-//
-// Phase 1: Print placeholder search message. Real RPC calls in Phase 2.
 
 use clap::Args;
+
+use crate::rpc_client::rpc_call;
 
 /// Semantic search query command.
 #[derive(Debug, Args)]
@@ -23,14 +23,68 @@ pub struct QueryCmd {
 }
 
 /// Run the query command.
-pub async fn run(cmd: &QueryCmd) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Searching for: \"{}\"", cmd.text);
-    println!("  Model:  {}", cmd.model);
-    println!("  Top-K:  {}", cmd.top_k);
-    println!();
-    // Phase 1: placeholder.
-    println!("No results found (placeholder response).");
-    println!("Note: Phase 1 placeholder. Real semantic search in Phase 2.");
+pub async fn run(cmd: &QueryCmd, rpc_endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let params = serde_json::json!({
+        "query_text": cmd.text,
+        "top_k": cmd.top_k,
+        "model_id": cmd.model,
+    });
+
+    let resp = rpc_call(rpc_endpoint, "query/search", params).await?;
+
+    if resp.success {
+        if let Some(result) = &resp.result {
+            let results = result
+                .get("results")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let search_time = result
+                .get("search_time_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let total = result
+                .get("total_found")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            println!(
+                "Search results: {} found ({} ms)",
+                total, search_time
+            );
+            println!();
+
+            if results.is_empty() {
+                println!("No results found.");
+            } else {
+                println!(
+                    "{:<38} {:<10} {:<10} {}",
+                    "Polyp ID", "Sim", "State", "Content"
+                );
+                println!("{}", "-".repeat(90));
+                for r in &results {
+                    let id = r.get("polyp_id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let sim = r
+                        .get("similarity")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let state = r.get("state").and_then(|v| v.as_str()).unwrap_or("?");
+                    let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let truncated = if content.len() > 40 {
+                        format!("{}...", &content[..40])
+                    } else {
+                        content.to_string()
+                    };
+                    println!("{:<38} {:<10.4} {:<10} {}", id, sim, state, truncated);
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "Error: {}",
+            resp.error.unwrap_or_else(|| "Unknown error".to_string())
+        );
+    }
 
     Ok(())
 }

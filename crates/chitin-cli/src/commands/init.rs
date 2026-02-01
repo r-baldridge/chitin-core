@@ -34,6 +34,15 @@ rpc_port = 50051
 p2p_port = 4001
 ipfs_api_url = "http://127.0.0.1:5001"
 log_level = "info"
+
+# --- Peer Networking (HTTP Relay) ---
+# Uncomment and configure to enable multi-node peer networking.
+#
+# This node's publicly reachable URL (other nodes will use this to reach us):
+# self_url = "http://YOUR_PUBLIC_IP:50051"
+#
+# List of peer node URLs to connect to:
+# peers = ["http://PEER1_IP:50051", "http://PEER2_IP:50051"]
 "#;
         fs::write(&config_path, default_config)?;
         println!("Wrote default config: {}", config_path.display());
