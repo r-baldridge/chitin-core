@@ -1,6 +1,6 @@
 # chitin-core
 
-Phase 1 Local MVP implementation of the [Chitin Protocol](https://github.com/r-baldridge/reefipedia) (Reefipedia).
+MVP implementation of the [Chitin Protocol](https://github.com/r-baldridge/reefipedia) (Reefipedia).
 
 ## Structure
 
